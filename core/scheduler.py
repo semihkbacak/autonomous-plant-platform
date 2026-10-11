@@ -1,6 +1,7 @@
 from core.models import PlantState, UnitStatus
 
 
+
 def total_active_power_mw(
     plant: PlantState,
 ) -> float:
