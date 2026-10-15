@@ -1,0 +1,4 @@
+site_id,plant,equipment_id,metric,unit,timestamp_utc,value,quality,source_ref
+DEMO,HES,UNIT_1,active_power_kw,kW,2026-10-15T10:00:00+00:00,12000,GOOD,DEMO_SYNTHETIC_NOT_REAL
+DEMO,GES,INV_1,active_power_kw,kW,2026-10-15T10:00:00+00:00,9.5,GOOD,DEMO_SYNTHETIC_NOT_REAL
+DEMO,RES,WT_1,active_power_kw,kW,2026-10-15T10:00:00+00:00,2500,UNCERTAIN,DEMO_SYNTHETIC_NOT_REAL

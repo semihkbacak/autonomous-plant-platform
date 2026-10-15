@@ -1,0 +1,33 @@
+name: Windows read-only viewer preview
+on:
+  push:
+    branches:
+      - 'release/**'
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/windows-viewer-preview.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  viewer:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup CPython
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build and smoke test (no production controls)
+        shell: pwsh
+        run: ./desktop/build_windows_v15.ps1
+      - name: Upload unsigned preview and verification report
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutonomousPlantViewer-Windows-PREVIEW-UNSIGNED
+          path: |
+            desktop/dist/AutonomousPlantViewer.exe
+            desktop/dist/viewer_release_report.json
+          if-no-files-found: error

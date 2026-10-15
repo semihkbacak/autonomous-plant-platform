@@ -1,0 +1,477 @@
+
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1.0">
+
+  <title>GES Monitoring Dashboard</title>
+
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #0b1220;
+      color: #e5e7eb;
+    }
+
+    header {
+      background: #111d30;
+      border-bottom: 1px solid #283549;
+      padding: 22px 28px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+    }
+
+    h2 {
+      margin-top: 0;
+      font-size: 17px;
+    }
+
+    .subtitle {
+      color: #9ca3af;
+      margin-top: 8px;
+      font-size: 13px;
+    }
+
+    main {
+      max-width: 1150px;
+      margin: auto;
+      padding: 24px;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 22px;
+    }
+
+    select, button {
+      background: #1d2a3c;
+      color: white;
+      border: 1px solid #45546a;
+      border-radius: 8px;
+      padding: 10px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #30435a;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns:
+        repeat(auto-fit, minmax(190px, 1fr));
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+
+    .panel {
+      background: #142136;
+      border: 1px solid #283b53;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    .metric-label {
+      font-size: 13px;
+      color: #9ca3af;
+    }
+
+    .metric-value {
+      font-size: 28px;
+      font-weight: 700;
+      margin-top: 8px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 65px 1fr 85px;
+      align-items: center;
+      gap: 12px;
+      margin: 12px 0;
+      font-size: 13px;
+    }
+
+    .bar-track {
+      background: #26374e;
+      border-radius: 5px;
+      height: 20px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      background: #38bdf8;
+      height: 100%;
+      transition: width 0.25s;
+    }
+
+    .alarm-row {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr 1fr;
+      gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid #2c3c52;
+      font-size: 13px;
+    }
+
+    .note {
+      color: #9ca3af;
+      font-size: 12px;
+      margin-bottom: 15px;
+    }
+
+    #status {
+      color: #93c5fd;
+      font-size: 13px;
+    }
+
+    .error {
+      color: #fca5a5 !important;
+    }
+
+    @media (max-width: 600px) {
+      .alarm-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <h1>Autonomous Plant Platform</h1>
+  <div class="subtitle">
+    GES Monitoring Dashboard • Historian • Read-only
+  </div>
+</header>
+
+<main>
+
+  <div class="toolbar">
+    <label for="runSelect">Simülasyon:</label>
+
+    <select id="runSelect"></select>
+
+    <button id="refreshButton">
+      Yenile
+    </button>
+
+    <span id="status">Yükleniyor...</span>
+  </div>
+
+  <section class="stats">
+
+    <article class="panel">
+      <div class="metric-label">Toplam enerji</div>
+      <div class="metric-value" id="energy">—</div>
+    </article>
+
+    <article class="panel">
+      <div class="metric-label">En yüksek AC güç</div>
+      <div class="metric-value" id="peak">—</div>
+    </article>
+
+    <article class="panel">
+      <div class="metric-label">Üretim kaydı</div>
+      <div class="metric-value" id="count">—</div>
+    </article>
+
+    <article class="panel">
+      <div class="metric-label">Alarm olayı</div>
+      <div class="metric-value" id="alarmCount">—</div>
+    </article>
+
+  </section>
+
+  <section class="panel">
+    <h2>AC güç geçmişi</h2>
+    <div class="note">
+      15 dakikalık tahmini ortalama güç (kW).
+      En fazla son 48 aralık görselleştirilir.
+    </div>
+
+    <div id="bars"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Alarm geçmişi</h2>
+    <div id="alarms"></div>
+  </section>
+
+  <div class="note">
+    SYNTHETIC kayıtlar sentetik simülasyon verisidir.
+    Bu panel gerçek PLC/SCADA kontrolü yapmaz.
+  </div>
+
+</main>
+
+<script>
+"use strict";
+
+const el = (id) => document.getElementById(id);
+
+let runs = [];
+
+
+function number(value, digits = 3) {
+  return Number(value).toLocaleString("tr-TR", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits
+  });
+}
+
+
+async function getJSON(url) {
+  const response = await fetch(url, {
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `HTTP ${response.status}: ${url}`
+    );
+  }
+
+  return response.json();
+}
+
+
+// Collect paginated Historian records.
+async function getAllRows(endpoint) {
+  const all = [];
+  const pageSize = 1000;
+
+  for (let offset = 0; offset <= 49000;
+       offset += pageSize) {
+
+    const separator = endpoint.includes("?")
+      ? "&" : "?";
+
+    const rows = await getJSON(
+      `${endpoint}${separator}limit=${pageSize}&offset=${offset}`
+    );
+
+    if (!Array.isArray(rows)) {
+      throw new Error("Geçersiz API yanıtı");
+    }
+
+    all.push(...rows);
+
+    if (rows.length < pageSize) {
+      return all;
+    }
+  }
+
+  throw new Error(
+    "Gösterim için kayıt sınırı aşıldı"
+  );
+}
+
+
+function renderBars(records) {
+  const container = el("bars");
+  container.replaceChildren();
+
+  const selected = records.slice(-48);
+
+  if (selected.length === 0) {
+    container.textContent = "Üretim kaydı bulunamadı.";
+    return;
+  }
+
+  const maxPower = Math.max(
+    1,
+    ...selected.map(
+      r => Number(r.dispatched_power_kw)
+    )
+  );
+
+  for (const record of selected) {
+    const power = Number(record.dispatched_power_kw);
+
+    const row = document.createElement("div");
+    row.className = "bar-row";
+
+    const time = document.createElement("span");
+    time.textContent = record.start_utc.slice(11, 16);
+
+    const track = document.createElement("div");
+    track.className = "bar-track";
+
+    const fill = document.createElement("div");
+    fill.className = "bar-fill";
+
+    fill.style.width = (
+      Math.max(0, Math.min(100, power / maxPower * 100))
+      + "%"
+    );
+
+    track.appendChild(fill);
+
+    const value = document.createElement("span");
+    value.textContent = number(power) + " kW";
+
+    row.append(time, track, value);
+    container.appendChild(row);
+  }
+}
+
+
+function renderAlarms(events) {
+  const container = el("alarms");
+  container.replaceChildren();
+
+  if (events.length === 0) {
+    container.textContent =
+      "Bu simülasyonda kaydedilmiş alarm yok.";
+    return;
+  }
+
+  for (const event of events) {
+    const row = document.createElement("div");
+    row.className = "alarm-row";
+
+    const time = document.createElement("span");
+    time.textContent = event.detected_at_utc;
+
+    const code = document.createElement("span");
+    code.textContent = (
+      event.code +
+      (event.inverter_id ? ":" + event.inverter_id : "")
+    );
+
+    const transition = document.createElement("span");
+    transition.textContent = event.transition;
+
+    row.append(time, code, transition);
+    container.appendChild(row);
+  }
+}
+
+
+async function loadSelectedRun() {
+  const runId = Number(el("runSelect").value);
+  const run = runs.find(item => item.id === runId);
+
+  if (!run) {
+    return;
+  }
+
+  el("status").textContent = "Veriler okunuyor...";
+  el("status").className = "";
+
+  try {
+    const base = `/solar/history/runs/${runId}`;
+
+    const [intervals, alarms] = await Promise.all([
+      getAllRows(base + "/intervals"),
+      getAllRows(base + "/alarms")
+    ]);
+
+    const peakPower = intervals.reduce(
+      (peak, item) => Math.max(
+        peak,
+        Number(item.dispatched_power_kw)
+      ),
+      0
+    );
+
+    el("energy").textContent =
+      number(run.total_energy_kwh) + " kWh";
+
+    el("peak").textContent =
+      number(peakPower) + " kW";
+
+    el("count").textContent =
+      String(intervals.length);
+
+    el("alarmCount").textContent =
+      String(alarms.length);
+
+    renderBars(intervals);
+    renderAlarms(alarms);
+
+    el("status").textContent =
+      `Run #${runId} • ${run.scenario}`;
+
+  } catch (error) {
+    el("status").textContent = error.message;
+    el("status").className = "error";
+  }
+}
+
+
+async function loadRuns() {
+  el("status").textContent = "Simülasyonlar yükleniyor...";
+  el("status").className = "";
+
+  try {
+    const previousId = el("runSelect").value;
+
+    runs = await getJSON("/solar/history/runs");
+
+    const select = el("runSelect");
+    select.replaceChildren();
+
+    for (const run of runs) {
+      const option = document.createElement("option");
+
+      option.value = String(run.id);
+      option.textContent =
+        `#${run.id} — ${run.scenario}`;
+
+      select.appendChild(option);
+    }
+
+    if (runs.length === 0) {
+      el("status").textContent =
+        "Veritabanında simülasyon bulunamadı.";
+      return;
+    }
+
+    if (runs.some(r => String(r.id) === previousId)) {
+      select.value = previousId;
+    }
+
+    await loadSelectedRun();
+
+  } catch (error) {
+    el("status").textContent = error.message;
+    el("status").className = "error";
+  }
+}
+
+
+el("runSelect").addEventListener(
+  "change",
+  loadSelectedRun
+);
+
+el("refreshButton").addEventListener(
+  "click",
+  loadRuns
+);
+
+loadRuns();
+
+</script>
+</body>
+</html>

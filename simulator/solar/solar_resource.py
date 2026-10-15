@@ -1,5 +1,5 @@
 """Solar resource to plane-of-array (POA) irradiance conversion.
-
+# güneş konumu ve GHI/DNI/DHI -> POA hesabu
 Simulator-only foundation. Uses published pvlib solar-position and
 Perez-Driesse sky transposition methods. This is NOT a complete PV energy
 model: shading, spectral and angle-of-incidence losses are not included.

@@ -1,0 +1,7 @@
+{
+  "rows": [
+    {"plant":"HES","start_utc":"2026-06-21T00:00:00Z","end_utc":"2026-06-21T00:15:00Z","mean_power_kw":1000.0,"source_kind":"SYNTHETIC_ALIGNED"},
+    {"plant":"GES","start_utc":"2026-06-21T00:00:00Z","end_utc":"2026-06-21T00:15:00Z","mean_power_kw":10.0,"source_kind":"SYNTHETIC_ALIGNED"},
+    {"plant":"RES","start_utc":"2026-06-21T00:00:00Z","end_utc":"2026-06-21T00:15:00Z","mean_power_kw":500.0,"source_kind":"SYNTHETIC_ALIGNED"}
+  ]
+}

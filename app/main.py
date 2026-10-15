@@ -1,4 +1,27 @@
+from app.v14_research_api import create_v14_router
+from app.v13_engineering_lab import create_v13_lab_router
+from app.site_guard import OperationModeFence, operation_mode
+from app.site_readiness import create_site_readiness_router
+from app.platform_alarm_center import create_platform_alarm_router
+from app.docs_ui import create_docs_router
+from app.sim_runtime import SimulatorSessions
+from app.sim_console_api import create_sim_console_router
 import asyncio
+import os
+from app.solar_dashboard import router as solar_dashboard_router
+from app.hydro_analytics_api import create_hydro_analytics_router
+from app.wind_analytics_api import create_wind_analytics_router
+from app.platform_dashboard import create_platform_router
+from app.solar_inverter_history_api import (
+    create_solar_inverter_history_router,
+)
+from app.hydro_live_api import create_hydro_live_router
+from os import getenv
+from app.solar_analytics_api import create_solar_analytics_router
+from app.solar_mppt_api import (
+    create_solar_mppt_router,
+)
+from app.solar_history_api import create_solar_history_router
 from contextlib import asynccontextmanager
 from core.anomaly import detect_anomalies
 from core.decision import build_decision_recommendations
@@ -28,6 +51,7 @@ from simulator.scenarios import ScenarioType
 # ============================================================
 
 sim = HydroPlantSimulator()
+sim_sessions = SimulatorSessions()
 
 
 # ============================================================
@@ -44,8 +68,11 @@ async def simulator_clock() -> None:
             sim.AUTO_TICK_INTERVAL_S
         )
 
-        if sim.auto_tick_enabled:
-            sim.tick()
+        if operation_mode() == 'SIMULATION':
+            if sim.auto_tick_enabled:
+                sim.tick()
+            # GES/RES: accelerated 15-minute synthetic steps, opt-in only.
+            await asyncio.to_thread(sim_sessions.auto_step)
 
 
 @asynccontextmanager
@@ -78,6 +105,7 @@ async def lifespan(app: FastAPI):
 # ============================================================
 
 app = FastAPI(
+    docs_url=None,
     title="Autonomous Plant Platform - Simulator",
     version="0.2.0",
     description=(
@@ -88,9 +116,84 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
-
+# V12 LOCAL SIMULATION/SHADOW BOUNDARY (no physical control)
+operation_mode()  # Fail closed for undefined modes, including REAL.
+app.add_middleware(OperationModeFence)
+app.include_router(create_site_readiness_router(
+    os.getenv('APP_SHADOW_DB', os.path.join(os.path.expanduser('~'),
+        '.local', 'state', 'autonomous-plant-platform', 'offline_shadow.sqlite3')),
+    os.getenv('APP_SITE_EVIDENCE_DIR'),
+))
+app.include_router(
+    create_solar_mppt_router(
+        getenv(
+            "GES_HISTORIAN_DB",
+            "outputs/ges_v04_integrated_demo/historian.sqlite3",
+        )
+    )
+)
+app.include_router(
+    create_solar_analytics_router(
+        os.getenv(
+            "GES_HISTORIAN_DB",
+            "outputs/ges_v04_stress_final_7d/historian.sqlite3",
+        )
+    )
+)
+# GES Historian read-only API
+app.include_router(
+    create_solar_history_router(
+        os.getenv(
+            "GES_HISTORIAN_DB",
+            "outputs/ges_normal/historian.sqlite3",
+        )
+    )
+)
+app.include_router(solar_dashboard_router)
+app.include_router(
+    create_hydro_live_router(sim)
+)
+app.include_router(create_sim_console_router(sim_sessions, sim))
+app.include_router(
+    create_platform_alarm_router(sim, sim_sessions)
+)
+app.include_router(
+    create_hydro_analytics_router(
+        os.getenv(
+            "HES_HISTORIAN_DB",
+            "outputs/hes_v10/hydro_history.sqlite3",
+        )
+    )
+)
+app.include_router(
+    create_solar_inverter_history_router(
+        os.getenv(
+            "GES_HISTORIAN_DB",
+            "outputs/ges_normal/historian.sqlite3",
+        )
+    )
+)
+# RES historian and unified HES/GES/RES read-only routes.
+app.include_router(
+    create_wind_analytics_router(
+        os.getenv("RES_HISTORIAN_DB", "outputs/res_v10/wind_history.sqlite3")
+    )
+)
+app.include_router(
+    create_platform_router(
+        hydro_db=os.getenv("HES_HISTORIAN_DB", "outputs/hes_v10/hydro_history.sqlite3"),
+        solar_db=os.getenv("GES_HISTORIAN_DB", "outputs/ges_v05_p03_final/historian.sqlite3"),
+        wind_db=os.getenv("RES_HISTORIAN_DB", "outputs/res_v10/wind_history.sqlite3"),
+    )
+)
 
 # ============================================================
+# V13 RESEARCH ENGINEERING LAB - READ ONLY
+app.include_router(create_v13_lab_router())
+
+# V14 RESEARCH VALIDATION - READ ONLY
+app.include_router(create_v14_router())
+
 # API REQUEST MODELS
 # ============================================================
 
@@ -526,3 +629,14 @@ def get_system_assessment() -> SystemAssessment:
         ml_anomalies=ml_anomalies,
         recommendations=recommendations,
     )
+
+app.include_router(create_docs_router())
+
+
+# BEGIN AUTONOMOUS-PLANT ENGINEERING V1.1 (ADD-ONLY)
+# Simulator-only engineering diagnostics and optional legacy mutation protection.
+from app.engineering_api import create_engineering_router
+from app.engineering_audit import LocalCommandAuditMiddleware
+app.include_router(create_engineering_router(sim, sim_sessions))
+app.add_middleware(LocalCommandAuditMiddleware)
+# END AUTONOMOUS-PLANT ENGINEERING V1.1 (ADD-ONLY)

@@ -1,0 +1,647 @@
+
+<!doctype html>
+<html lang="tr">
+
+<head>
+<meta charset="utf-8">
+<meta name="viewport"
+      content="width=device-width, initial-scale=1">
+
+<title>APP | GES İnverter İzleme</title>
+
+<style>
+:root {
+    font-family: system-ui, Arial, sans-serif;
+    color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: #0a1020;
+    color: #e8eef8;
+}
+
+header {
+    padding: 22px;
+    background: #142139;
+    border-bottom: 1px solid #33425a;
+}
+
+h1 {
+    font-size: 23px;
+    margin: 4px 0;
+}
+
+small, .muted {
+    color: #a9b9d2;
+}
+
+a { color: #83caff; }
+
+main {
+    max-width: 1160px;
+    margin: auto;
+    padding: 22px 18px;
+}
+
+.controls {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+select, button {
+    color: #f7faff;
+    background: #1c2b45;
+    border: 1px solid #4c607d;
+    border-radius: 8px;
+    padding: 10px;
+    min-height: 42px;
+}
+
+button { cursor: pointer; }
+
+.metrics {
+    display: grid;
+    grid-template-columns:
+        repeat(auto-fit, minmax(175px, 1fr));
+    gap: 12px;
+}
+
+.panel {
+    background: #152238;
+    border: 1px solid #2b405e;
+    padding: 17px;
+    border-radius: 12px;
+    margin-bottom: 16px;
+}
+
+.metric-label {
+    font-size: 12px;
+    color: #a9b9d2;
+}
+
+.metric {
+    font-size: 25px;
+    font-weight: 700;
+    margin-top: 8px;
+}
+
+h2 {
+    font-size: 17px;
+    margin: 0 0 12px;
+}
+
+.note {
+    color: #acb9d0;
+    font-size: 12px;
+    margin: 8px 0 15px;
+}
+
+.chart-row {
+    display: grid;
+    grid-template-columns:
+        80px 80px minmax(80px, 1fr) 92px;
+    gap: 10px;
+    align-items: center;
+    margin: 8px 0;
+    font-size: 12px;
+}
+
+.track {
+    height: 15px;
+    background: #263952;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.fill {
+    height: 100%;
+    background: #38bdf8;
+}
+
+.table-wrap { overflow-x: auto; }
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    min-width: 780px;
+}
+
+th, td {
+    border-bottom: 1px solid #2e4059;
+    padding: 10px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+th { color: #a7b8d3; }
+
+.alarm {
+    padding: 10px 0;
+    border-bottom: 1px solid #2e4059;
+    font-size: 13px;
+}
+
+#error {
+    color: #ff9b9b;
+    font-size: 13px;
+}
+
+#status {
+    font-size: 13px;
+    color: #94cdfd;
+}
+
+@media(max-width: 620px) {
+    .chart-row {
+        grid-template-columns:
+            65px 65px minmax(55px, 1fr) 75px;
+        gap: 5px;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<header>
+    <h1>Autonomous Plant Platform – GES İnverterleri</h1>
+    <small>
+        Yerel sentetik simülasyon • Yalnızca okuma
+        • <a href="/solar/dashboard">Tesis Dashboard</a>
+    </small>
+</header>
+
+<main>
+
+<div class="controls">
+    <label>
+        Çalışma
+        <select id="run"></select>
+    </label>
+
+    <label>
+        İnverter
+        <select id="device">
+            <option value="">Tüm inverterler</option>
+        </select>
+    </label>
+
+    <button id="refresh">Yenile</button>
+    <span id="status">Yükleniyor…</span>
+</div>
+
+<p id="error" role="alert"></p>
+
+<section class="metrics">
+
+    <article class="panel">
+        <div class="metric-label">
+            Toplam inverter enerjisi
+        </div>
+        <div id="energy" class="metric">—</div>
+    </article>
+
+    <article class="panel">
+        <div class="metric-label">
+            En yüksek tek inverter AC güç
+        </div>
+        <div id="peak" class="metric">—</div>
+    </article>
+
+    <article class="panel">
+        <div class="metric-label">
+            Clipping kaybı
+        </div>
+        <div id="clipping" class="metric">—</div>
+    </article>
+
+    <article class="panel">
+        <div class="metric-label">
+            Curtailment kaybı
+        </div>
+        <div id="curtailment" class="metric">—</div>
+    </article>
+
+</section>
+
+<section class="panel">
+    <h2>İnverter AC sevk gücü</h2>
+
+    <p class="note">
+        Son 48 inverter-aralık kaydı.
+        Değerler sentetik ve 15 dakikalık
+        aralık boyunca sabit kabul edilmiştir.
+    </p>
+
+    <div id="chart"></div>
+</section>
+
+<section class="panel">
+    <h2>15 dakikalık inverter kayıtları</h2>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>UTC başlangıç</th>
+                    <th>İnverter</th>
+                    <th>Durum</th>
+                    <th>DC kabul (kW)</th>
+                    <th>AC sevk (kW)</th>
+                    <th>Clipping (kW)</th>
+                    <th>Curtailment (kW)</th>
+                    <th>Kalite</th>
+                </tr>
+            </thead>
+            <tbody id="intervals"></tbody>
+        </table>
+    </div>
+
+    <p class="note">
+        Tabloda en fazla 300 kayıt gösterilir.
+        Daha fazla kayıt API üzerinden okunabilir.
+    </p>
+</section>
+
+<section class="panel">
+    <h2>Alarm geçmişi</h2>
+    <p class="note">
+        Tesis ve inverter alarm kayıtları ayrı kaynaklarla
+        gösterilir. Alarm zaman damgası fiziksel arızanın
+        kesin başlangıç zamanını göstermeyebilir.
+    </p>
+    <div id="alarms"></div>
+</section>
+
+<section class="panel">
+    <h2>Parametre kaynakları</h2>
+    <div id="snapshots"></div>
+</section>
+
+<p class="note">
+    Bu ekran gerçek PLC, SCADA veya OT ekipmanına bağlanmaz.
+</p>
+
+</main>
+
+<script>
+"use strict";
+
+const $ = id => document.getElementById(id);
+
+const fmt = (n, d = 3) =>
+    Number(n).toLocaleString("tr-TR", {
+        minimumFractionDigits: d,
+        maximumFractionDigits: d
+    });
+
+function cell(parent, value) {
+    const td = document.createElement("td");
+    td.textContent = String(value);
+    parent.appendChild(td);
+}
+
+async function json(url) {
+    const response = await fetch(url, {
+        cache: "no-store"
+    });
+
+    if (!response.ok) {
+        throw new Error(
+            `HTTP ${response.status}: ${url}`
+        );
+    }
+
+    return response.json();
+}
+
+async function paged(url) {
+    const all = [];
+
+    for (let offset = 0; offset < 10000; offset += 1000) {
+        const separator = url.includes("?") ? "&" : "?";
+
+        const part = await json(
+            `${url}${separator}limit=1000&offset=${offset}`
+        );
+
+        all.push(...part);
+
+        if (part.length < 1000) {
+            return all;
+        }
+    }
+
+    throw new Error("10.000 kayıt sınırı aşıldı");
+}
+
+let runs = [];
+let records = [];
+let alarms = [];
+let snapshots = [];
+
+function setMessage(message, error = false) {
+    $("status").textContent = error ? "Hata" : message;
+    $("error").textContent = error ? message : "";
+}
+
+function render() {
+    const filter = $("device").value;
+
+    const selected = filter
+        ? records.filter(r => r.inverter_id === filter)
+        : records;
+
+    const total = key =>
+        selected.reduce(
+            (sum, row) => sum + Number(row[key] || 0),
+            0
+        );
+
+    $("energy").textContent =
+        fmt(total("interval_energy_kwh")) + " kWh";
+
+    $("peak").textContent =
+        fmt(Math.max(
+            0,
+            ...selected.map(r => Number(r.ac_dispatched_kw))
+        )) + " kW";
+
+    $("clipping").textContent =
+        fmt(total("clipping_loss_kw") * 0.25) + " kWh";
+
+    $("curtailment").textContent =
+        fmt(total("curtailment_kw") * 0.25) + " kWh";
+
+    // ----------------------------------------
+    // POWER CHART
+    // ----------------------------------------
+
+    const chart = $("chart");
+    chart.replaceChildren();
+
+    const recent = selected.slice(-48);
+
+    const maximum = Math.max(
+        1,
+        ...recent.map(r => Number(r.ac_dispatched_kw))
+    );
+
+    for (const rowData of recent) {
+
+        const row = document.createElement("div");
+        row.className = "chart-row";
+
+        const time = document.createElement("span");
+        time.textContent = rowData.start_utc.slice(11, 16);
+
+        const id = document.createElement("span");
+        id.textContent = rowData.inverter_id;
+
+        const track = document.createElement("div");
+        track.className = "track";
+
+        const bar = document.createElement("div");
+        bar.className = "fill";
+
+        bar.style.width = (
+            Math.max(
+                0,
+                Math.min(
+                    100,
+                    Number(rowData.ac_dispatched_kw)
+                    / maximum * 100
+                )
+            )
+            + "%"
+        );
+
+        track.appendChild(bar);
+
+        const power = document.createElement("span");
+        power.textContent =
+            fmt(rowData.ac_dispatched_kw) + " kW";
+
+        row.append(time, id, track, power);
+        chart.appendChild(row);
+    }
+
+    if (!recent.length) {
+        chart.textContent =
+            "Bu çalışmada inverter kaydı bulunamadı.";
+    }
+
+    // ----------------------------------------
+    // INTERVAL TABLE
+    // ----------------------------------------
+
+    const tbody = $("intervals");
+    tbody.replaceChildren();
+
+    for (const r of selected.slice(-300)) {
+        const tr = document.createElement("tr");
+
+        for (const value of [
+            r.start_utc,
+            r.inverter_id,
+            r.status,
+            fmt(r.dc_accepted_kw),
+            fmt(r.ac_dispatched_kw),
+            fmt(r.clipping_loss_kw),
+            fmt(r.curtailment_kw),
+            (r.quality_flags || []).join(", ")
+        ]) {
+            cell(tr, value);
+        }
+
+        tbody.appendChild(tr);
+    }
+
+    // ----------------------------------------
+    // ALARMS
+    // ----------------------------------------
+
+    const alarmBox = $("alarms");
+    alarmBox.replaceChildren();
+
+    let alarmCount = 0;
+
+    for (const alarm of alarms) {
+
+        if (
+            filter
+            && alarm.source_table ===
+               "ges_inverter_alarm_events"
+            && alarm.inverter_id !== filter
+        ) {
+            continue;
+        }
+
+        const row = document.createElement("div");
+        row.className = "alarm";
+
+        const source = alarm.source_table === "alarm_events"
+            ? "TESİS / GENEL GEÇMİŞ"
+            : "İNVERTER GEÇMİŞİ";
+
+        row.textContent =
+            `${alarm.timestamp_utc} | ${source} | `
+            + `${alarm.inverter_id || "—"} | `
+            + `${alarm.code} | ${alarm.transition}`;
+
+        alarmBox.appendChild(row);
+        alarmCount++;
+    }
+
+    if (!alarmCount) {
+        alarmBox.textContent = "Alarm olayı bulunamadı.";
+    }
+
+    // ----------------------------------------
+    // PARAMETER SNAPSHOTS
+    // ----------------------------------------
+
+    const snapshotBox = $("snapshots");
+    snapshotBox.replaceChildren();
+
+    for (const snapshot of snapshots) {
+
+        if (
+            filter
+            && snapshot.component_id !== filter
+        ) {
+            continue;
+        }
+
+        const row = document.createElement("div");
+        row.className = "alarm";
+
+        row.textContent =
+            `${snapshot.component_id} • `
+            + `${snapshot.model_id} • `
+            + `SHA256 ${snapshot.snapshot_id.slice(0, 12)}…`;
+
+        snapshotBox.appendChild(row);
+    }
+
+    if (!snapshotBox.childElementCount) {
+        snapshotBox.textContent =
+            "Parametre snapshot kaydı bulunamadı.";
+    }
+}
+
+async function loadRun() {
+
+    const id = $("run").value;
+    if (!id) return;
+
+    setMessage("Kayıtlar yükleniyor…");
+
+    try {
+        const base =
+            `/solar/inverters/runs/${encodeURIComponent(id)}`;
+
+        [records, alarms, snapshots] = await Promise.all([
+            paged(base + "/intervals"),
+            json(base + "/alarms"),
+            json(base + "/snapshots")
+        ]);
+
+        const picker = $("device");
+        const previous = picker.value;
+
+        picker.replaceChildren();
+
+        const all = document.createElement("option");
+        all.value = "";
+        all.textContent = "Tüm inverterler";
+        picker.appendChild(all);
+
+        const devices = [
+            ...new Set(records.map(r => r.inverter_id))
+        ].sort();
+
+        for (const device of devices) {
+            const option = document.createElement("option");
+            option.value = device;
+            option.textContent = device;
+            picker.appendChild(option);
+        }
+
+        if (
+            [...picker.options].some(
+                option => option.value === previous
+            )
+        ) {
+            picker.value = previous;
+        }
+
+        render();
+
+        setMessage(
+            `Run #${id} • ${records.length} inverter kaydı`
+        );
+
+    } catch (error) {
+        setMessage(error.message, true);
+    }
+}
+
+async function refresh() {
+
+    setMessage("Çalışmalar okunuyor…");
+
+    try {
+        const previous = $("run").value;
+        runs = await json("/solar/inverters/runs");
+
+        const select = $("run");
+        select.replaceChildren();
+
+        for (const run of runs) {
+
+            const option = document.createElement("option");
+            option.value = String(run.id);
+
+            option.textContent =
+                `#${run.id} — ${run.scenario}`;
+
+            select.appendChild(option);
+        }
+
+        if (
+            runs.some(
+                run => String(run.id) === previous
+            )
+        ) {
+            select.value = previous;
+        }
+
+        if (!runs.length) {
+            setMessage("Kayıtlı simülasyon yok");
+            return;
+        }
+
+        await loadRun();
+
+    } catch (error) {
+        setMessage(error.message, true);
+    }
+}
+
+$("run").addEventListener("change", loadRun);
+$("device").addEventListener("change", render);
+$("refresh").addEventListener("click", refresh);
+
+refresh();
+</script>
+
+</body>
+</html>

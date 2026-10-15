@@ -1,0 +1,11 @@
+gate,test_id,scenario,precondition,expected_safety_result,result,reviewer,evidence_hash
+HIL_FAT,FAT_001,Telemetry loss,Approved isolation lab,No unintended command; data stale,NOT_RUN,,
+HIL_FAT,FAT_002,OT network loss,Approved isolation lab,Independent protection unaffected,NOT_RUN,,
+HIL_FAT,FAT_003,E-stop independent,Qualified protection test bench,Protective relay/PLC independent of server,NOT_RUN,,
+HIL_FAT,FAT_004,Clock skew,Approved isolation lab,Out-of-window data rejected,NOT_RUN,,
+HIL_FAT,FAT_005,Power loss/restart,Approved isolation lab,No unexpected restart of equipment,NOT_RUN,,
+SAT,SAT_001,Shadow meter correlation,Authorized site export,Calibrated reference comparison signed,NOT_RUN,,
+SAT,SAT_002,Interlock check,Site team authorized,Independent interlocks witnessed,NOT_RUN,,
+SAT,SAT_003,Network cyber review,OT team authorized,Security zones and incident procedures reviewed,NOT_RUN,,
+SAT,SAT_004,Backup/recovery,Site owner authorized,Recovery objectives measured and signed,NOT_RUN,,
+PILOT,PILOT_001,Long-running shadow,Site owner authorized,Availability/accuracy sample accepted,NOT_RUN,,

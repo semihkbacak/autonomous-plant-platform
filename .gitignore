@@ -50,3 +50,34 @@ dist/
 
 # Local archives
 *.zip
+
+# Autonomous Plant Platform - local and generated data
+outputs/
+data/
+.engineering_v11_backups/
+.plant_upgrade_v*/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# Local backups
+*.bak*
+*.backup*
+*.before_*
+*.docs_backup_*
+
+# Credentials and private material
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+.secrets/
+
+# Distribution artifacts
+*.exe
+*.pyz
+*.tar.gz
+artifacts/
