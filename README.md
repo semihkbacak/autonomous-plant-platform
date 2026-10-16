@@ -5,6 +5,7 @@
 > **Release status:** v1.5 preview — research / synthetic simulation / offline SHADOW analysis.
 > **NOT FOR REAL-TIME OT CONTROL.** No production PLC/SCADA command channel, field acceptance, OEM certification, or unattended plant-control approval is included.
 
+[![Cross-platform regression](https://github.com/semihkbacak/autonomous-plant-platform/actions/workflows/portability-ci.yml/badge.svg)](https://github.com/semihkbacak/autonomous-plant-platform/actions/workflows/portability-ci.yml)
 [![Windows viewer preview](https://github.com/semihkbacak/autonomous-plant-platform/actions/workflows/windows-viewer-preview.yml/badge.svg)](https://github.com/semihkbacak/autonomous-plant-platform/actions/workflows/windows-viewer-preview.yml)
 
 ## Overview / Genel bakış
@@ -26,7 +27,7 @@ These are software capabilities, **not** claims of OEM-level digital-twin fideli
 
 ## Installation — Windows / Linux (local simulation)
 
-**Python 3.13 recommended**, test suite snapshots: Linux 662 passed, user-reported Windows FIX2 all panels opened; Windows final regression count should be confirmed by local report. Other versions may require additional testing. No real PLC, SCADA or OT network integration is authorized.
+**Python 3.13 recommended.** Local regression snapshots: Windows 662 passed (2026-10-16, Python 3.13.15) and Linux 662 passed (2026-10-15, Python 3.13). Follow GitHub Actions for cross-platform validation of each commit. Other versions may require additional testing. No real PLC, SCADA or OT network integration is authorized.
 
 ### Windows (PowerShell/CMD, Python 3.13 installed)
 

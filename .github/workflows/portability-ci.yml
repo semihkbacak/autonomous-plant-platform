@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches:
+      - main
       - release/v1.5-preview-20261015
 permissions:
   contents: read

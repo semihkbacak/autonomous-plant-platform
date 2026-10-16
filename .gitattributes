@@ -13,3 +13,9 @@
 *.jpg binary
 *.pdf binary
 *.xlsx binary
+
+# Exact-byte SHA-256 fixtures, use LF even on Windows runners
+data/solar/demo_weather_15m.csv text eol=lf
+data/solar/reference/ges_component_parameters.csv text eol=lf
+data/solar/reference/ges_benchmark_results.csv text eol=lf
+outputs/ges_oem_shadow_v05/oem_shadow_audit.json text eol=lf
