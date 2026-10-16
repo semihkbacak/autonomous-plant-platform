@@ -1,0 +1,31 @@
+{
+  "source_archive": "windowsproje.zip (user provided SSD snapshot)",
+  "required_fixtures_sha256": {
+    "data/solar/demo_weather_15m.csv": "ba369cf7ed699e7b5924da819db3c17785e800b9ae4dd948aacf96dead5ffdb7",
+    "data/solar/reference/ges_component_parameters.csv": "909b696e631fa5a6db24dd5de9ed55dbe6a3b45194ed5277d2ef47d1e7cbc3be",
+    "data/solar/reference/ges_benchmark_results.csv": "f37c66ab54b93b838ff7c98e7a19607fdf88b32ce9686c2f9a3580259a9c4db1",
+    "ges_oem_research.zip": "22669d6360da86681496009fc449fe94a508c25adc905697f54a9a4489f5c2b7",
+    "outputs/ges_oem_shadow_v05/oem_shadow_audit.json": "0024b53936f89799adcd58fe139831ea8ba949378c9a43288158d66dd8a8c371"
+  },
+  "source_file_count": 241,
+  "excluded_linux_venv": true,
+  "excluded_original_outputs_except_oem_audit": true,
+  "installer_requires_python": "3.13",
+  "windows_tests_verified": false,
+  "field_control_validated": false,
+  "linux_python_3_13_full_pytest": "662 passed, 2 model version mismatch warnings in local validation (25.41s)",
+  "linux_python_3_13_test_pvlib": "pvlib 0.16.1 source recovered from same SSD archive for local verification",
+  "local_compatibility_fix": "disable push trigger in .github/workflows/windows-viewer-preview.yml to satisfy regression",
+  "windows_scikit_learn_pin": "1.9.1 (SSD model version)",
+  "release_target": "GitHub-ready Windows + Linux v1.5 preview source package",
+  "windows_user_report": "FIX2 launch and all HES/GES/RES panels opened (user reported); precise Windows full pytest count not independently verified",
+  "cross_platform_ci_status": "new CI workflow supplied; never run on GitHub for this new package as of archive creation",
+  "third_party_rights_review_required": true,
+  "release_fixture_allowlist": [
+    "data/solar/demo_weather_15m.csv",
+    "data/solar/reference/ges_component_parameters.csv",
+    "data/solar/reference/ges_benchmark_results.csv",
+    "ges_oem_research.zip",
+    "outputs/ges_oem_shadow_v05/oem_shadow_audit.json"
+  ]
+}

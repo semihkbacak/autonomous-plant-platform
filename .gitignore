@@ -1,83 +1,77 @@
+# Python and developer machines
 .venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.env
-.DS_Store
-.idea/
-.vscode/
-# Python
+venv/
+.venv_linux_backup_*/
+.venv_otheros_backup_*/
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Virtual environment
-.venv/
-venv/
-
-# Pytest
 .pytest_cache/
-
-# IDE
-.vscode/
-.idea/
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Python tooling
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
-
-# Logs
-*.log
-
-# Temporary files
-*.tmp
-*.temp
-
-# Local environment
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
 .env
 .env.*
+.secrets/
 
-# Build artifacts
+# Generated logs, builds, previews, backups
+*.log
+*.tmp
+*.temp
+*.egg-info/
 build/
 dist/
-*.egg-info/
-
-# Local archives
-*.zip
-
-# Autonomous Plant Platform - local and generated data
-outputs/
-data/
+Windows_EXE/
+artifacts/
+*.exe
+*.pyz
+*.tar.gz
+*.bak*
+*.backup*
+*.before_*
+*.docs_backup_*
 .engineering_v11_backups/
 .plant_upgrade_v*/
+.windows_test_tmp/
+.linux_test_tmp/
+WINDOWS_TEST_RAPORU.txt
+
+# Credentials and site-specific databases are never release assets
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
 *.sqlite
 *.sqlite3
 *.db
 *.db-wal
 *.db-shm
 
-# Local backups
-*.bak*
-*.backup*
-*.before_*
-*.docs_backup_*
+# Deny all archives except the reviewed reproducibility input below.
+*.zip
+!ges_oem_research.zip
 
-# Credentials and private material
-*.pem
-*.key
-*.p12
-*.pfx
-*.crt
-.secrets/
+# Deny local /data files but version the synthetic fixtures required by tests.
+/data/*
+!/data/solar/
+/data/solar/*
+!/data/solar/demo_weather_15m.csv
+!/data/solar/reference/
+/data/solar/reference/*
+!/data/solar/reference/ges_component_parameters.csv
+!/data/solar/reference/ges_benchmark_results.csv
 
-# Distribution artifacts
-*.exe
-*.pyz
-*.tar.gz
-artifacts/
+# Deny generated output except the small checked static OEM audit fixture.
+/outputs/*
+!/outputs/ges_oem_shadow_v05/
+/outputs/ges_oem_shadow_v05/*
+!/outputs/ges_oem_shadow_v05/oem_shadow_audit.json
+
+# GitHub Actions CI temporary test files
+.ci_pytest_tmp/

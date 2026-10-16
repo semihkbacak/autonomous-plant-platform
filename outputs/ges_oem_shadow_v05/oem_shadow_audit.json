@@ -1,0 +1,72 @@
+{
+  "created_at_utc": "2026-10-14T21:39:03.867419+00:00",
+  "research_zip_sha256": "22669d6360da86681496009fc449fe94a508c25adc905697f54a9a4489f5c2b7",
+  "scenario_database": "outputs/ges_v05_matrix_full/historian.sqlite3",
+  "scenario_runs": 54,
+  "mppt_rows": 20736,
+  "oem_catalog_rows": 158,
+  "evidence_types": {
+    "oem_published": 109,
+    "derived_from_oem": 10,
+    "unknown": 39
+  },
+  "verification_statuses": {
+    "verified_selected_document": 111,
+    "unknown": 39,
+    "verified_selected_document; cross_document_scope_difference": 4,
+    "conditional_derived": 4
+  },
+  "missing_for_full_physics": {
+    "TRINA_TSM445_NEG9R28": [
+      "a_ref_v",
+      "i_l_ref_a",
+      "i_o_ref_a",
+      "r_sh_ref_ohm",
+      "r_s_ohm"
+    ],
+    "JINKO_JKM585N72HL4V": [
+      "a_ref_v",
+      "i_l_ref_a",
+      "i_o_ref_a",
+      "r_sh_ref_ohm",
+      "r_s_ohm"
+    ],
+    "SMA_STP50_40": [
+      "eta_nominal_curve_parameter"
+    ],
+    "SUNGROW_SG110CX_V152": [
+      "eta_nominal_curve_parameter",
+      "rated_ac_w"
+    ]
+  },
+  "model_screening": {
+    "SMA_STP50_40": {
+      "mppt_count": 6.0,
+      "mppt_min_v": 500.0,
+      "mppt_max_v": 800.0,
+      "max_dc_v": 1000.0,
+      "max_operating_current_per_mppt_a": 20.0,
+      "max_short_circuit_current_per_mppt_a": 30.0,
+      "max_dc_current_a": 120.0
+    },
+    "SUNGROW_SG110CX_V152": {
+      "mppt_count": 9.0,
+      "mppt_min_v": 200.0,
+      "mppt_max_v": 1000.0,
+      "max_dc_v": 1100.0,
+      "max_operating_current_per_mppt_a": 26.0,
+      "max_short_circuit_current_per_mppt_a": 40.0,
+      "max_dc_current_a": null
+    }
+  },
+  "flags_total": 12559,
+  "limitations": [
+    "OEM source classifications originate from the supplied research package.",
+    "Original manufacturer PDFs are not included in the ZIP.",
+    "The scenario powers are synthetic.",
+    "No new OEM energy simulation was run.",
+    "This is an electrical envelope screening, not an installation approval.",
+    "De Soto and full inverter efficiency calibration remain incomplete.",
+    "Requested Q is not measured delivered Q."
+  ]
+}

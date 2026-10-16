@@ -32,7 +32,7 @@ def start_permitted(plant: PlantState, unit: UnitState) -> tuple[bool, list[str]
         reasons.append("Unit bearing temperature is too high")
     if unit.vibration_mm_s >= MAX_START_VIBRATION_MM_S:
         reasons.append("Unit vibration is too high")
-    
+
     return (len(reasons) == 0, reasons)
 # Operatörün güç hedefi talebini kontrol eder.
 def power_setpoint_permitted(

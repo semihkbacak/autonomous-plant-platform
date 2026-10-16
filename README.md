@@ -2,7 +2,7 @@
 
 **HES + GES + RES | Simulation-first energy plant digital twins and decision-support research platform**
 
-> **Release status:** v1.5 preview — research / synthetic simulation / offline SHADOW analysis.  
+> **Release status:** v1.5 preview — research / synthetic simulation / offline SHADOW analysis.
 > **NOT FOR REAL-TIME OT CONTROL.** No production PLC/SCADA command channel, field acceptance, OEM certification, or unattended plant-control approval is included.
 
 [![Windows viewer preview](https://github.com/semihkbacak/autonomous-plant-platform/actions/workflows/windows-viewer-preview.yml/badge.svg)](https://github.com/semihkbacak/autonomous-plant-platform/actions/workflows/windows-viewer-preview.yml)
@@ -24,31 +24,36 @@ Bu proje, hidroelektrik, güneş ve rüzgâr enerji santralleri için üretici b
 
 These are software capabilities, **not** claims of OEM-level digital-twin fidelity or operational safety certification. The three simulators do not imply a common synchronized physical clock.
 
-## Installation / Linux kurulumu
+## Installation — Windows / Linux (local simulation)
 
-Requires Python 3 and the packages in `requirements.txt`. The project has been tested by the contributor in a Python 3.14 virtual environment; dependency compatibility must be checked on other Python versions.
+**Python 3.13 recommended**, test suite snapshots: Linux 662 passed, user-reported Windows FIX2 all panels opened; Windows final regression count should be confirmed by local report. Other versions may require additional testing. No real PLC, SCADA or OT network integration is authorized.
+
+### Windows (PowerShell/CMD, Python 3.13 installed)
+
+From the extracted project folder, launch `01_WINDOWS_KUR_TEST_VE_BASLAT.cmd` to install dependencies, run the full test suite, and start a localhost-only server. Alternatives: `02_YALNIZ_TEST.cmd` for test-only and `03_TESTSIZ_BASLAT.cmd` for subsequent quick launches. The GUI viewer is read-only.
+
+### Linux (Bash, Python 3.13 recommended)
+
+```bash
+bash 01_LINUX_KUR_TEST_VE_BASLAT.sh
+# or run tests without starting a server:
+bash 02_LINUX_YALNIZ_TEST.sh
+# or start after dependencies are already installed:
+bash 03_LINUX_TESTSIZ_BASLAT.sh
+```
+
+### Manual / developers
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pytest -q --assert=plain -x
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pytest -q --assert=plain -x
+.venv/bin/python -m tools.v15_launcher --mode SIMULATION --enable-local-sim-commands
 ```
 
-Start read-only/offline-oriented **SHADOW** mode (the default):
+For Windows use `.\.venv\Scripts\python.exe` in place of `.venv/bin/python`.
 
-```bash
-python -m tools.v15_launcher
-```
-
-For **local synthetic simulation only**, explicitly enable simulator commands:
-
-```bash
-python -m tools.v15_launcher --mode SIMULATION --enable-local-sim-commands
-```
-
-The launcher binds to `127.0.0.1:8000` by default. Do not expose this development server to a public interface or an OT network. If port 8000 is occupied, shut down the old instance or use `--port 8001` (the Windows preview viewer currently expects its local default endpoint).
+The launcher binds to `127.0.0.1:8000` only. It must not be exposed to a public network or to an OT network. The Windows preview viewer expects port 8000.
 
 ## Interfaces / Arayüzler
 
@@ -88,6 +93,10 @@ The research models and validation tools do **not** replace:
 
 No real-plant control or autonomous unattended operation is authorized by this repository. See `docs/RELEASE_GATES_TR.md`, `docs/SECURITY_AND_OT_BOUNDARY_TR.md`, and `docs/LITERATUR_TARAMASI_TR.md` for evidence requirements and references.
 
+## Release assets and contribution requirements
+
+The repository must track the five explicitly allow-listed test inputs, despite the default exclusion of `data/`, `outputs/` and `*.zip`. Run `python scripts/verify_release_assets.py` after every fresh clone. Do not push personal or production data. See `RELEASE_GITHUB_WINDOWS_LINUX_TR.md` for the reviewed staging workflow.
+
 ## Project layout
 
 ```text
@@ -103,7 +112,7 @@ docs/            release gates, literature and engineering limitations
 .github/         preview CI workflows
 ```
 
-`outputs/`, SQLite historians, secrets, local configuration, virtual environments and manufacturer-proprietary data must not be committed.
+Generated `outputs/` (except a single reviewed static audit JSON), SQLite historians, secrets, local configuration, and virtual environments must not be committed. The research archive `ges_oem_research.zip` is allow-listed for repeatable offline tests but requires explicit third-party rights review before public redistribution.
 
 ## Testing and contributions
 

@@ -1,0 +1,5840 @@
+]633;E;for f in simulator/solar/{solar_pipeline,solar_plant,inverter,multi_mppt_physics,pq_dispatch,solar_timeseries,historian,inverter_history_schema,inverter_history_writer,inverter_history_adapter,inverter_snapshot_payloads,pv_array,solar_resource,solar_temperature,ac_power_limits}.py demo_ges_timeseries.py tests/{test_solar_advanced_14,test_solar_historian_inverter_e2e,test_solar_physics_cache}.py;4d96a1b2-50fe-4f47-ad62-aa6086cabced]633;C
+
+========== simulator/solar/solar_pipeline.py ==========
+
+from __future__ import annotations
+from typing import Mapping
+
+from simulator.solar.pq_dispatch import (
+    PQCapability,
+    dispatch_with_pq,
+)
+from dataclasses import dataclass
+from datetime import datetime
+from math import isfinite
+from typing import Sequence
+
+from simulator.solar.solar_resource import (
+    IrradianceSample,
+    PVSurface,
+    SolarSite,
+    POAResult,
+    calculate_poa,
+)
+
+from simulator.solar.pv_array import (
+    PVArrayConfiguration,
+    PVArrayDCResult,
+    calculate_pv_array_from_poa,
+)
+
+from simulator.solar.inverter import InverterConfig
+
+from simulator.solar.solar_plant import (
+    SolarInverterInput,
+    SolarPlantReport,
+    SolarPlantSimulator,
+)
+
+
+# ============================================================
+# WEATHER INPUT
+# ============================================================
+
+@dataclass(frozen=True)
+class SolarWeather:
+    irradiance: IrradianceSample
+    ambient_temperature_c: float
+    wind_speed_m_s: float
+
+
+# ============================================================
+# PV ARRAY + INVERTER CONNECTION
+# ============================================================
+
+@dataclass(frozen=True)
+class SolarAsset:
+    inverter: InverterConfig
+    array: PVArrayConfiguration
+    surface: PVSurface
+
+
+# ============================================================
+# SINGLE ARRAY CALCULATION
+# ============================================================
+
+@dataclass(frozen=True)
+class SolarArrayReport:
+    inverter_id: str
+    poa: POAResult
+    dc: PVArrayDCResult
+
+
+# ============================================================
+# COMPLETE PLANT SNAPSHOT
+# ============================================================
+
+@dataclass(frozen=True)
+class SolarPipelineReport:
+    timestamp_utc: datetime
+    array_reports: tuple[SolarArrayReport, ...]
+    plant: SolarPlantReport
+
+
+# ============================================================
+# SOLAR PHYSICS PIPELINE
+# ============================================================
+
+class SolarPhysicsPipeline:
+    """
+    GES fizik modellerini uçtan uca birleştirir.
+
+    GHI / DNI / DHI
+         -> POA
+         -> PV sıcaklık
+         -> DC MPP
+         -> inverter AC
+         -> plant dispatch
+
+    Sadece simülasyon ve analiz amaçlıdır.
+    Gerçek PLC/SCADA komutu göndermez.
+    """
+
+    def __init__(
+        self,
+        site: SolarSite,
+        assets: Sequence[SolarAsset],
+    ) -> None:
+
+        self.site = site
+        self.assets = tuple(assets)
+
+        # Çoklu inverter işletim hesaplayıcısı.
+        # Boş veya tekrarlanan inverter kimlikleri
+        # SolarPlantSimulator tarafından reddedilir.
+        self.plant = SolarPlantSimulator(
+            [
+                asset.inverter
+                for asset in self.assets
+            ]
+        )
+
+        self.inverter_ids = {
+            asset.inverter.inverter_id
+            for asset in self.assets
+        }
+
+    # ========================================================
+    # SIMULATION
+    # ========================================================
+
+    def simulate(
+        self,
+        weather: SolarWeather,
+        requested_target_kw: float | None = None,
+        *,
+        grid_available: bool = True,
+        emergency_stop: bool = False,
+        fault_inverter_ids: frozenset[str] = frozenset(),
+        maintenance_inverter_ids: frozenset[str] = frozenset(),
+        pq_capabilities: Mapping[str, PQCapability] | None = None,
+        reactive_requests_kvar: Mapping[str, float] | None = None,
+    ) -> SolarPipelineReport:
+
+        # ----------------------------------------
+        # WEATHER VALIDATION
+        # ----------------------------------------
+
+        if (
+            not isfinite(weather.ambient_temperature_c)
+            or weather.ambient_temperature_c <= -273.15
+        ):
+            raise ValueError(
+                "Invalid ambient temperature"
+            )
+
+        if (
+            not isfinite(weather.wind_speed_m_s)
+            or weather.wind_speed_m_s < 0
+        ):
+            raise ValueError(
+                "Invalid wind speed"
+            )
+
+        # ----------------------------------------
+        # INVERTER ID VALIDATION
+        # ----------------------------------------
+
+        unknown_faults = (
+            set(fault_inverter_ids)
+            - self.inverter_ids
+        )
+
+        unknown_locks = (
+            set(maintenance_inverter_ids)
+            - self.inverter_ids
+        )
+
+        if unknown_faults or unknown_locks:
+            raise ValueError(
+                "Unknown inverter ID in fault/lock inputs"
+            )
+
+        # ----------------------------------------
+        # ARRAY PHYSICS
+        # ----------------------------------------
+
+        array_reports = []
+        inverter_inputs = []
+                # Cache only for the current simulation instant.
+        # The next interval starts with empty caches.
+        poa_cache = {}
+        dc_cache = {}
+
+        for asset in self.assets:
+
+                        # 1. Reuse POA for identical surfaces.
+            surface_key = asset.surface
+
+            if surface_key not in poa_cache:
+                poa_cache[surface_key] = calculate_poa(
+                    site=self.site,
+                    surface=asset.surface,
+                    sample=weather.irradiance,
+                )
+
+            poa = poa_cache[surface_key]
+
+            # 2. Reuse DC physics for identical arrays.
+            temperature_params = getattr(
+                asset,
+                "temperature_params",
+                None,
+            )
+
+            dc_key = (
+                asset.surface,
+                asset.array,
+                temperature_params,
+            )
+
+            if dc_key not in dc_cache:
+                dc_cache[dc_key] = (
+                    calculate_pv_array_from_poa(
+                        poa_result=poa,
+                        ambient_temperature_c=(
+                            weather.ambient_temperature_c
+                        ),
+                        wind_speed_m_s=(
+                            weather.wind_speed_m_s
+                        ),
+                        config=asset.array,
+                        temperature_params=temperature_params,
+                    )
+                )
+
+            dc = dc_cache[dc_key]
+
+            inverter_id = (
+                asset.inverter.inverter_id
+            )
+
+            array_reports.append(
+                SolarArrayReport(
+                    inverter_id=inverter_id,
+                    poa=poa,
+                    dc=dc,
+                )
+            )
+
+            # 3. Use calculated DC MPP values.
+            # No hard-coded DC voltage or power.
+            inverter_inputs.append(
+                SolarInverterInput(
+                    inverter_id=inverter_id,
+                    dc_power_kw=dc.array_pmp_kw,
+                    dc_voltage_v=dc.array_vmp_v,
+                    fault_active=(
+                        inverter_id
+                        in fault_inverter_ids
+                    ),
+                    maintenance_lock=(
+                        inverter_id
+                        in maintenance_inverter_ids
+                    ),
+                )
+            )
+
+        # ----------------------------------------
+        # MULTI-INVERTER PLANT DISPATCH
+        # ----------------------------------------
+
+        if (
+            pq_capabilities is None
+            and reactive_requests_kvar is None
+        ):
+            # Legacy behavior remains unchanged.
+            plant_report = self.plant.simulate(
+                inputs=inverter_inputs,
+                requested_target_kw=requested_target_kw,
+                grid_available=grid_available,
+                emergency_stop=emergency_stop,
+            )
+
+        else:
+            if (
+                pq_capabilities is None
+                or reactive_requests_kvar is None
+            ):
+                raise ValueError(
+                    "Both P-Q capability and Q requests required"
+                )
+
+            pq_result = dispatch_with_pq(
+                plant=self.plant,
+                inputs=inverter_inputs,
+
+                capabilities=pq_capabilities,
+
+                reactive_requests_kvar=(
+                    reactive_requests_kvar
+                ),
+
+                requested_target_kw=(
+                    requested_target_kw
+                ),
+
+                grid_available=grid_available,
+
+                emergency_stop=emergency_stop,
+            )
+
+            plant_report = pq_result.plant
+
+        return SolarPipelineReport(
+            timestamp_utc=(
+                array_reports[0].poa.timestamp_utc
+            ),
+            array_reports=tuple(array_reports),
+            plant=plant_report,
+        )
+
+
+========== simulator/solar/solar_plant.py ==========
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from math import isfinite
+from typing import Sequence
+
+from simulator.solar.inverter import(
+    InverterConfig,
+    InverterResult,
+    simulate_inverter,
+
+)
+@dataclass(frozen=True)
+class SolarInverterInput:
+    """
+    Bir inverterin anlık DC giriş verileri.
+
+    Bu veriler ileride PV dizi modelinden gelecek.
+    """
+
+    inverter_id: str
+    dc_power_kw: float
+    dc_voltage_v: float
+
+    fault_active: bool = False
+    maintenance_lock: bool = False
+
+
+@dataclass(frozen=True)
+class SolarPlantReport:
+    """
+    Çoklu inverterli GES simülasyon sonucu.
+    """
+
+    requested_target_kw: float | None
+
+    available_power_kw: float
+    dispatched_power_kw: float
+
+    curtailed_power_kw: float
+    unserved_target_kw: float
+
+    grid_available: bool
+    emergency_stop: bool
+
+    inverter_results: tuple[InverterResult, ...]
+    reasons: tuple[str, ...]
+
+
+class SolarPlantSimulator:
+    """
+    Çoklu inverterli GES için ilk tesis seviyesi
+    dispatch modeli.
+
+    Gerçek PLC/SCADA bağlantısı içermez.
+    """
+
+    def __init__(
+        self,
+        inverters: Sequence[InverterConfig],
+    ) -> None:
+
+        if not inverters:
+            raise ValueError(
+                "At least one inverter is required"
+            )
+
+        ids = [
+            inverter.inverter_id
+            for inverter in inverters
+        ]
+
+        if len(ids) != len(set(ids)):
+            raise ValueError(
+                "Duplicate inverter IDs"
+            )
+
+        self.inverters = tuple(inverters)
+
+    def simulate(
+        self,
+        inputs: Sequence[SolarInverterInput],
+        requested_target_kw: float | None = None,
+        *,
+        grid_available: bool = True,
+        emergency_stop: bool = False,
+    ) -> SolarPlantReport:
+
+        # ------------------------------------------
+        # TARGET VALIDATION
+        # ------------------------------------------
+
+        if requested_target_kw is not None:
+            if (
+                not isfinite(requested_target_kw)
+                or requested_target_kw < 0
+            ):
+                raise ValueError(
+                    "Invalid plant power target"
+                )
+
+        # ------------------------------------------
+        # INPUT VALIDATION
+        # ------------------------------------------
+
+        input_ids = [
+            item.inverter_id
+            for item in inputs
+        ]
+
+        if len(input_ids) != len(set(input_ids)):
+            raise ValueError(
+                "Duplicate inverter telemetry"
+            )
+
+        input_map = {
+            item.inverter_id: item
+            for item in inputs
+        }
+
+        expected_ids = {
+            item.inverter_id
+            for item in self.inverters
+        }
+
+        received_ids = set(input_map)
+
+        if expected_ids != received_ids:
+            raise ValueError(
+                "Missing or unknown inverter telemetry: "
+                f"missing={sorted(expected_ids - received_ids)}, "
+                f"unknown={sorted(received_ids - expected_ids)}"
+            )
+
+        # ------------------------------------------
+        # AVAILABLE AC POWER
+        # ------------------------------------------
+
+        available_results: list[InverterResult] = []
+
+        for config in self.inverters:
+            reading = input_map[config.inverter_id]
+
+            result = simulate_inverter(
+                config=config,
+                dc_power_kw=reading.dc_power_kw,
+                dc_voltage_v=reading.dc_voltage_v,
+                grid_available=grid_available,
+                fault_active=reading.fault_active,
+                maintenance_lock=reading.maintenance_lock,
+            )
+
+            # Tesis düzeyindeki emergency-stop,
+            # simülatörde tüm inverterleri bloke eder.
+
+            if emergency_stop:
+                result = replace(
+                    result,
+                    status="BLOCKED",
+                    dc_accepted_kw=0.0,
+                    ac_unclipped_kw=0.0,
+                    ac_available_kw=0.0,
+                    ac_dispatched_kw=0.0,
+                    dc_rejected_kw=0.0,
+                    conversion_loss_kw=0.0,
+                    clipping_loss_kw=0.0,
+                    curtailment_kw=0.0,
+                    reasons=(
+                        *result.reasons,
+                        "PLANT_EMERGENCY_STOP",
+                    ),
+                )
+
+            available_results.append(result)
+
+        total_available_kw = sum(
+            item.ac_available_kw
+            for item in available_results
+        )
+
+        # ------------------------------------------
+        # PLANT TARGET
+        # ------------------------------------------
+
+        if requested_target_kw is None:
+            deliverable_target_kw = total_available_kw
+        else:
+            deliverable_target_kw = min(
+                requested_target_kw,
+                total_available_kw,
+            )
+
+        # ------------------------------------------
+        # PROPORTIONAL DISPATCH
+        # ------------------------------------------
+
+        final_results: list[InverterResult] = []
+
+        for config, available in zip(
+            self.inverters,
+            available_results,
+        ):
+
+            if available.ac_available_kw <= 0:
+                final_results.append(available)
+                continue
+
+            reading = input_map[config.inverter_id]
+
+            # Nominal güç oranı yerine mevcut
+            # kullanılabilir AC güç oranı kullanılır.
+
+            share = (
+                available.ac_available_kw
+                / total_available_kw
+            )
+
+            inverter_target_kw = (
+                deliverable_target_kw * share
+            )
+
+            result = simulate_inverter(
+                config=config,
+                dc_power_kw=reading.dc_power_kw,
+                dc_voltage_v=reading.dc_voltage_v,
+                grid_available=grid_available,
+                fault_active=reading.fault_active,
+                maintenance_lock=reading.maintenance_lock,
+                active_power_limit_kw=inverter_target_kw,
+            )
+
+            final_results.append(result)
+
+        # ------------------------------------------
+        # TOTAL RESULTS
+        # ------------------------------------------
+
+        dispatched_kw = sum(
+            item.ac_dispatched_kw
+            for item in final_results
+        )
+
+        curtailed_kw = sum(
+            item.curtailment_kw
+            for item in final_results
+        )
+
+        unserved_kw = 0.0
+
+        if requested_target_kw is not None:
+            unserved_kw = max(
+                0.0,
+                requested_target_kw - dispatched_kw,
+            )
+
+        # ------------------------------------------
+        # PLANT REASONS
+        # ------------------------------------------
+
+        reasons: list[str] = []
+
+        if emergency_stop:
+            reasons.append(
+                "PLANT_EMERGENCY_STOP"
+            )
+
+        if not grid_available:
+            reasons.append(
+                "GRID_UNAVAILABLE"
+            )
+
+        if total_available_kw <= 0:
+            reasons.append(
+                "NO_AC_POWER_AVAILABLE"
+            )
+
+        if unserved_kw > 1e-7:
+            reasons.append(
+                "INSUFFICIENT_AVAILABLE_POWER"
+            )
+
+        if curtailed_kw > 1e-7:
+            reasons.append(
+                "CURTAILMENT_APPLIED"
+            )
+
+        return SolarPlantReport(
+            requested_target_kw=requested_target_kw,
+            available_power_kw=total_available_kw,
+            dispatched_power_kw=dispatched_kw,
+            curtailed_power_kw=curtailed_kw,
+            unserved_target_kw=unserved_kw,
+            grid_available=grid_available,
+            emergency_stop=emergency_stop,
+            inverter_results=tuple(final_results),
+            reasons=tuple(reasons),
+        )
+
+========== simulator/solar/inverter.py ==========
+
+from dataclasses import dataclass
+from math import isfinite
+
+from pvlib.inverter import pvwatts
+
+
+@dataclass(frozen=True)
+class InverterConfig:
+    inverter_id: str
+    rated_ac_kw: float
+    nominal_efficiency: float
+
+    mppt_min_v: float
+    mppt_max_v: float
+    max_dc_voltage_v: float
+    max_dc_current_a: float
+
+    def __post_init__(self):
+        if not self.inverter_id.strip():
+            raise ValueError("Inverter ID cannot be empty")
+
+        values = (
+            self.rated_ac_kw,
+            self.nominal_efficiency,
+            self.mppt_min_v,
+            self.mppt_max_v,
+            self.max_dc_voltage_v,
+            self.max_dc_current_a,
+        )
+
+        if not all(isfinite(value) for value in values):
+            raise ValueError("Inverter parameters must be finite")
+
+        if self.rated_ac_kw <= 0:
+            raise ValueError("Rated AC power must be positive")
+
+        if not 0 < self.nominal_efficiency <= 1:
+            raise ValueError("Invalid inverter efficiency")
+
+        if not (
+            0 < self.mppt_min_v
+            < self.mppt_max_v
+            <= self.max_dc_voltage_v
+        ):
+            raise ValueError("Invalid DC voltage limits")
+
+        if self.max_dc_current_a <= 0:
+            raise ValueError("Max DC current must be positive")
+
+
+@dataclass(frozen=True)
+class InverterResult:
+    inverter_id: str
+    status: str
+
+    dc_offered_kw: float
+    dc_accepted_kw: float
+
+    ac_unclipped_kw: float
+    ac_available_kw: float
+    ac_dispatched_kw: float
+
+    dc_rejected_kw: float
+    conversion_loss_kw: float
+    clipping_loss_kw: float
+    curtailment_kw: float
+
+    reasons: tuple[str, ...]
+
+
+def _zero_result(
+    config: InverterConfig,
+    dc_offered_kw: float,
+    status: str,
+    reasons: list[str],
+) -> InverterResult:
+    return InverterResult(
+        inverter_id=config.inverter_id,
+        status=status,
+        dc_offered_kw=dc_offered_kw,
+        dc_accepted_kw=0.0,
+        ac_unclipped_kw=0.0,
+        ac_available_kw=0.0,
+        ac_dispatched_kw=0.0,
+        dc_rejected_kw=0.0,
+        conversion_loss_kw=0.0,
+        clipping_loss_kw=0.0,
+        curtailment_kw=0.0,
+        reasons=tuple(reasons),
+    )
+
+
+def simulate_inverter(
+    config: InverterConfig,
+    dc_power_kw: float,
+    dc_voltage_v: float,
+    *,
+    grid_available: bool = True,
+    fault_active: bool = False,
+    maintenance_lock: bool = False,
+    active_power_limit_kw: float | None = None,
+) -> InverterResult:
+
+    if not isfinite(dc_power_kw) or dc_power_kw < 0:
+        raise ValueError("Invalid DC power")
+
+    if not isfinite(dc_voltage_v) or dc_voltage_v < 0:
+        raise ValueError("Invalid DC voltage")
+
+    if active_power_limit_kw is not None:
+        if (
+            not isfinite(active_power_limit_kw)
+            or active_power_limit_kw < 0
+        ):
+            raise ValueError("Invalid active power limit")
+
+    reasons = []
+
+    if not grid_available:
+        reasons.append("GRID_UNAVAILABLE")
+
+    if fault_active:
+        reasons.append("INVERTER_FAULT")
+
+    if maintenance_lock:
+        reasons.append("MAINTENANCE_LOCK")
+
+    if dc_power_kw > 0:
+        if dc_voltage_v <= 0:
+            reasons.append("INVALID_DC_VOLTAGE")
+
+        elif dc_voltage_v > config.max_dc_voltage_v:
+            reasons.append("DC_OVERVOLTAGE")
+
+        elif not (
+            config.mppt_min_v
+            <= dc_voltage_v
+            <= config.mppt_max_v
+        ):
+            reasons.append("OUTSIDE_MPPT_WINDOW")
+
+    if reasons:
+        return _zero_result(
+            config,
+            dc_power_kw,
+            "BLOCKED",
+            reasons,
+        )
+
+    if dc_power_kw == 0:
+        return _zero_result(
+            config,
+            dc_power_kw,
+            "IDLE",
+            ["NO_DC_POWER"],
+        )
+
+    # DC current limitation.
+    max_dc_power_by_current_kw = (
+        dc_voltage_v
+        * config.max_dc_current_a
+        / 1000.0
+    )
+
+    dc_accepted_kw = min(
+        dc_power_kw,
+        max_dc_power_by_current_kw,
+    )
+
+    dc_rejected_kw = max(
+        0.0,
+        dc_power_kw - dc_accepted_kw,
+    )
+
+    if dc_rejected_kw > 1e-9:
+        reasons.append("DC_CURRENT_LIMIT")
+
+    # PVWatts DC input reference.
+    # This is NOT the PV array STC rating.
+    pdc0_kw = (
+        config.rated_ac_kw
+        / config.nominal_efficiency
+    )
+
+    ac_available_kw = float(
+        pvwatts(
+            pdc=dc_accepted_kw,
+            pdc0=pdc0_kw,
+            eta_inv_nom=config.nominal_efficiency,
+        )
+    )
+
+    ac_available_kw = max(0.0, ac_available_kw)
+
+    # PVWatts efficiency formula before AC clipping.
+    zeta = dc_accepted_kw / pdc0_kw
+
+    efficiency = (
+        config.nominal_efficiency / 0.9637
+    ) * (
+        -0.0162 * zeta
+        - 0.0059 / zeta
+        + 0.9858
+    )
+
+    ac_unclipped_kw = max(
+        0.0,
+        dc_accepted_kw * efficiency,
+    )
+
+    clipping_loss_kw = max(
+        0.0,
+        ac_unclipped_kw - ac_available_kw,
+    )
+
+    conversion_loss_kw = max(
+        0.0,
+        dc_accepted_kw - ac_unclipped_kw,
+    )
+
+    if clipping_loss_kw > 1e-9:
+        reasons.append("AC_CLIPPING")
+
+    # Operator / scheduler curtailment.
+    if active_power_limit_kw is None:
+        ac_dispatched_kw = ac_available_kw
+    else:
+        ac_dispatched_kw = min(
+            ac_available_kw,
+            active_power_limit_kw,
+        )
+
+    curtailment_kw = max(
+        0.0,
+        ac_available_kw - ac_dispatched_kw,
+    )
+
+    if curtailment_kw > 1e-9:
+        reasons.append("ACTIVE_POWER_LIMIT")
+
+    status = (
+        "RUNNING"
+        if ac_dispatched_kw > 0
+        else "CURTAILED"
+    )
+
+    return InverterResult(
+        inverter_id=config.inverter_id,
+        status=status,
+        dc_offered_kw=dc_power_kw,
+        dc_accepted_kw=dc_accepted_kw,
+        ac_unclipped_kw=ac_unclipped_kw,
+        ac_available_kw=ac_available_kw,
+        ac_dispatched_kw=ac_dispatched_kw,
+        dc_rejected_kw=dc_rejected_kw,
+        conversion_loss_kw=conversion_loss_kw,
+        clipping_loss_kw=clipping_loss_kw,
+        curtailment_kw=curtailment_kw,
+        reasons=tuple(reasons),
+    )
+
+
+========== simulator/solar/multi_mppt_physics.py ==========
+
+"""
+Independent MPPT DC calculations.
+
+Uses APP's existing:
+- PV irradiance/POA model
+- Faiman temperature model
+- De Soto single-diode DC model
+
+Simulation only.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import fsum, isfinite
+from typing import Sequence
+
+from simulator.solar.pv_array import (
+    PVArrayConfiguration,
+    calculate_pv_array_from_poa,
+)
+
+from simulator.solar.solar_resource import (
+    PVSurface,
+    SolarSite,
+    calculate_poa,
+)
+
+from simulator.solar.solar_pipeline import SolarWeather
+
+from simulator.solar.solar_temperature import (
+    FaimanParameters,
+)
+
+
+@dataclass(frozen=True)
+class MPPTLimits:
+    mppt_count: int
+    min_v: float
+    max_v: float
+    max_dc_v: float
+    max_operating_a: float
+    max_short_circuit_a: float
+    max_strings: int
+
+
+@dataclass(frozen=True)
+class MPPTArray:
+    channel: int
+    array: PVArrayConfiguration
+    surface: PVSurface
+    temperature_params: FaimanParameters = (
+        FaimanParameters()
+    )
+
+
+@dataclass(frozen=True)
+class MPPTChannelResult:
+    channel: int
+
+    voltage_v: float
+    current_a: float
+    short_circuit_a: float
+    open_circuit_v: float
+
+    offered_kw: float
+    accepted_kw: float
+    rejected_kw: float
+
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MultiMPPTResult:
+    channels: tuple[MPPTChannelResult, ...]
+
+    dc_offered_kw: float
+    dc_accepted_kw: float
+    dc_rejected_kw: float
+
+    warnings: tuple[str, ...]
+
+
+def calculate_multi_mppt_dc(
+    site: SolarSite,
+    weather: SolarWeather,
+    arrays: Sequence[MPPTArray],
+    limits: MPPTLimits,
+) -> MultiMPPTResult:
+    """
+    Calculate per-channel DC MPP and apply
+    preliminary MPPT electrical limits.
+
+    Current limiting is estimated at Vmp.
+    This is not a complete MPPT control-loop
+    or mismatch-curve model.
+    """
+
+    if (
+        not arrays
+        or type(limits.mppt_count) is not int
+        or limits.mppt_count < 1
+        or type(limits.max_strings) is not int
+        or limits.max_strings < 1
+    ):
+        raise ValueError(
+            "Invalid MPPT configuration"
+        )
+
+    electrical_limits = (
+        limits.min_v,
+        limits.max_v,
+        limits.max_dc_v,
+        limits.max_operating_a,
+        limits.max_short_circuit_a,
+    )
+
+    if (
+        any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(value)
+            or value <= 0
+            for value in electrical_limits
+        )
+        or not (
+            limits.min_v
+            < limits.max_v
+            <= limits.max_dc_v
+        )
+    ):
+        raise ValueError(
+            "Invalid MPPT electrical limits"
+        )
+
+    seen = set()
+    results = []
+
+    # Reuse POA for channels facing
+    # exactly the same surface.
+    poa_cache = {}
+
+    for item in arrays:
+
+        if (
+            type(item.channel) is not int
+            or not (
+                1 <= item.channel <= limits.mppt_count
+            )
+        ):
+            raise ValueError(
+                "Invalid MPPT channel number"
+            )
+
+        if item.channel in seen:
+            raise ValueError(
+                "Duplicate MPPT channel"
+            )
+
+        seen.add(item.channel)
+
+        if (
+            item.array.parallel_strings
+            > limits.max_strings
+        ):
+            raise ValueError(
+                "Too many parallel strings on MPPT"
+            )
+
+        # 1. Irradiance for this MPPT surface.
+        if item.surface not in poa_cache:
+            poa_cache[item.surface] = calculate_poa(
+                site=site,
+                surface=item.surface,
+                sample=weather.irradiance,
+            )
+
+        # 2. Independent PV array DC calculation.
+        dc = calculate_pv_array_from_poa(
+            poa_result=poa_cache[item.surface],
+
+            ambient_temperature_c=(
+                weather.ambient_temperature_c
+            ),
+
+            wind_speed_m_s=(
+                weather.wind_speed_m_s
+            ),
+
+            config=item.array,
+            temperature_params=item.temperature_params,
+        )
+
+        offered = dc.array_pmp_kw
+        voltage = dc.array_vmp_v
+        current = dc.array_imp_a
+
+        isc = (
+            dc.module_isc_a
+            * item.array.parallel_strings
+        )
+
+        voc = (
+            dc.module_voc_v
+            * item.array.modules_per_string
+        )
+
+        reasons = []
+
+        # 3. Apply channel-specific operating limits.
+        if offered <= 0:
+            accepted = 0.0
+
+        elif voc > limits.max_dc_v:
+            accepted = 0.0
+
+            reasons.append(
+                "DC_VOC_EXCEEDS_ABSOLUTE_LIMIT"
+            )
+
+        elif isc > limits.max_short_circuit_a:
+            accepted = 0.0
+
+            reasons.append(
+                "MPPT_SHORT_CIRCUIT_CURRENT_LIMIT"
+            )
+
+        elif not (
+            limits.min_v
+            <= voltage
+            <= limits.max_v
+        ):
+            accepted = 0.0
+
+            reasons.append(
+                "OUTSIDE_MPPT_WINDOW"
+            )
+
+        else:
+            # Approximate current limitation at Vmp.
+            maximum_power_kw = (
+                voltage
+                * limits.max_operating_a
+                / 1000.0
+            )
+
+            accepted = min(
+                offered,
+                maximum_power_kw,
+            )
+
+            if current > limits.max_operating_a:
+                reasons.append(
+                    "MPPT_OPERATING_CURRENT_LIMIT_ESTIMATE"
+                )
+
+        results.append(
+            MPPTChannelResult(
+                channel=item.channel,
+
+                voltage_v=voltage,
+                current_a=current,
+
+                short_circuit_a=isc,
+                open_circuit_v=voc,
+
+                offered_kw=offered,
+                accepted_kw=accepted,
+
+                rejected_kw=max(
+                    0.0,
+                    offered - accepted,
+                ),
+
+                reasons=tuple(reasons),
+            )
+        )
+
+    # 4. Combine DC power, not DC voltages.
+    total_offered = fsum(
+        item.offered_kw
+        for item in results
+    )
+
+    total_accepted = fsum(
+        item.accepted_kw
+        for item in results
+    )
+
+    return MultiMPPTResult(
+        channels=tuple(results),
+
+        dc_offered_kw=total_offered,
+        dc_accepted_kw=total_accepted,
+
+        dc_rejected_kw=max(
+            0.0,
+            total_offered - total_accepted,
+        ),
+
+        warnings=(
+            "NO_STRING_MISMATCH_IV_OPTIMIZATION",
+            "CURRENT_LIMIT_AT_VMP_IS_APPROXIMATE",
+            "COLD_VOC_REQUIRES_DESIGN_TEMPERATURE_SCREENING",
+        ),
+    )
+
+
+========== simulator/solar/pq_dispatch.py ==========
+
+"""
+Opt-in active/reactive power capability dispatch.
+
+Simulation-only active power limitation.
+This does NOT guarantee actual reactive power
+delivery or model OEM-specific P-Q curves.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import isfinite
+from typing import Mapping, Sequence
+
+from simulator.solar.ac_power_limits import (
+    ACOperatingRequest,
+    evaluate_ac_power,
+)
+
+from simulator.solar.inverter import (
+    InverterResult,
+    simulate_inverter,
+)
+
+from simulator.solar.solar_plant import (
+    SolarInverterInput,
+    SolarPlantReport,
+    SolarPlantSimulator,
+)
+
+
+@dataclass(frozen=True)
+class PQCapability:
+    nameplate_kva: float
+
+    rated_active_kw: float | None
+
+    temperature_limit_kva: float | None = None
+
+    temperature_limit_source: str | None = None
+
+
+@dataclass(frozen=True)
+class PQPlantResult:
+    plant: SolarPlantReport
+
+    screened_reactive_kvar: dict[str, float]
+
+    max_active_kw_by_inverter: dict[str, float]
+
+    warnings: tuple[str, ...]
+
+
+def dispatch_with_pq(
+    plant: SolarPlantSimulator,
+    inputs: Sequence[SolarInverterInput],
+    *,
+    capabilities: Mapping[str, PQCapability],
+    reactive_requests_kvar: Mapping[str, float],
+    requested_target_kw: float | None = None,
+    grid_available: bool = True,
+    emergency_stop: bool = False,
+) -> PQPlantResult:
+    """
+    Recalculate active-power dispatch subject to
+    a simplified P-Q apparent-power envelope.
+
+    The inverter's physical DC/AC conversion
+    continues to use the existing inverter.py.
+
+    This is not a hardware command.
+    """
+
+    inverter_ids = tuple(
+        config.inverter_id
+        for config in plant.inverters
+    )
+
+    if (
+        set(capabilities) != set(inverter_ids)
+        or set(reactive_requests_kvar)
+        != set(inverter_ids)
+    ):
+        raise ValueError(
+            "Missing or extra inverter P-Q configuration"
+        )
+
+    # 1. Get physical inverter output WITHOUT
+    # an active-power dispatch target.
+    baseline = plant.simulate(
+        inputs,
+
+        requested_target_kw=None,
+
+        grid_available=grid_available,
+
+        emergency_stop=emergency_stop,
+    )
+
+    input_by_id = {
+        item.inverter_id: item
+        for item in inputs
+    }
+
+    baseline_by_id = {
+        item.inverter_id: item
+        for item in baseline.inverter_results
+    }
+
+    active_caps = {}
+    q_requests = {}
+    warnings = []
+
+    # 2. Determine each inverter's independent
+    # maximum active power under requested Q.
+    for config in plant.inverters:
+
+        inverter_id = config.inverter_id
+
+        capability = capabilities[inverter_id]
+
+        if not isinstance(
+            capability,
+            PQCapability,
+        ):
+            raise ValueError(
+                "Expected PQCapability"
+            )
+
+        q = reactive_requests_kvar[
+            inverter_id
+        ]
+
+        if (
+            isinstance(q, bool)
+            or not isinstance(q, (int, float))
+            or not isfinite(q)
+        ):
+            raise ValueError(
+                "Invalid reactive request"
+            )
+
+        operating_screen = evaluate_ac_power(
+            ACOperatingRequest(
+                nameplate_kva=(
+                    capability.nameplate_kva
+                ),
+
+                requested_active_kw=(
+                    baseline_by_id[
+                        inverter_id
+                    ].ac_available_kw
+                ),
+
+                requested_reactive_kvar=q,
+
+                temperature_limit_kva=(
+                    capability.temperature_limit_kva
+                ),
+
+                temperature_limit_source=(
+                    capability.temperature_limit_source
+                ),
+            )
+        )
+
+        if operating_screen.max_active_kw is None:
+            raise ValueError(
+                f"Reactive request infeasible: {inverter_id}"
+            )
+
+        rated_active_kw = (
+            capability.rated_active_kw
+        )
+
+        if rated_active_kw is None:
+            raise ValueError(
+                f"Rated active power unknown: {inverter_id}"
+            )
+
+        if (
+            isinstance(rated_active_kw, bool)
+            or not isinstance(
+                rated_active_kw,
+                (int, float),
+            )
+            or not isfinite(rated_active_kw)
+            or rated_active_kw <= 0
+        ):
+            raise ValueError(
+                "Invalid rated active power"
+            )
+
+        available = baseline_by_id[
+            inverter_id
+        ].ac_available_kw
+
+        active_caps[inverter_id] = min(
+            available,
+            operating_screen.max_active_kw,
+            rated_active_kw,
+        )
+
+        q_requests[inverter_id] = float(q)
+
+        warnings.extend(
+            operating_screen.warnings
+        )
+
+        if (
+            active_caps[inverter_id]
+            < available - 1e-9
+        ):
+            warnings.append(
+                f"PQ_ACTIVE_LIMIT:{inverter_id}"
+            )
+
+    # 3. Validate plant target.
+    if requested_target_kw is not None:
+
+        if (
+            isinstance(requested_target_kw, bool)
+            or not isinstance(
+                requested_target_kw,
+                (int, float),
+            )
+            or not isfinite(requested_target_kw)
+            or requested_target_kw < 0
+        ):
+            raise ValueError(
+                "Invalid requested target"
+            )
+
+    total_cap = sum(
+        active_caps.values()
+    )
+
+    target = (
+        total_cap
+        if requested_target_kw is None
+        else min(
+            total_cap,
+            requested_target_kw,
+        )
+    )
+
+    # 4. Proportional active dispatch
+    # based on Q-constrained capacities.
+    results: list[InverterResult] = []
+
+    for config in plant.inverters:
+
+        inverter_id = config.inverter_id
+
+        baseline_result = baseline_by_id[
+            inverter_id
+        ]
+
+        if (
+            baseline_result.status == "BLOCKED"
+            or baseline_result.ac_available_kw <= 0
+        ):
+            results.append(
+                baseline_result
+            )
+            continue
+
+        share = (
+            active_caps[inverter_id] / total_cap
+            if total_cap > 0
+            else 0.0
+        )
+
+        inverter_active_target = (
+            target * share
+        )
+
+        input_data = input_by_id[
+            inverter_id
+        ]
+
+        # Re-run the existing physical inverter model
+        # with the constrained active-power target.
+        constrained_result = simulate_inverter(
+            config,
+
+            input_data.dc_power_kw,
+            input_data.dc_voltage_v,
+
+            grid_available=grid_available,
+
+            fault_active=input_data.fault_active,
+
+            maintenance_lock=input_data.maintenance_lock,
+
+            active_power_limit_kw=(
+                inverter_active_target
+            ),
+        )
+
+        results.append(
+            constrained_result
+        )
+
+    # 5. Rebuild plant totals from actual
+    # constrained inverter results.
+    dispatched_kw = sum(
+        result.ac_dispatched_kw
+        for result in results
+    )
+
+    curtailed_kw = sum(
+        result.curtailment_kw
+        for result in results
+    )
+
+    unserved_kw = (
+        0.0
+        if requested_target_kw is None
+        else max(
+            0.0,
+            requested_target_kw - dispatched_kw,
+        )
+    )
+
+    reasons = list(
+        baseline.reasons
+    )
+
+    if any(
+        active_caps[inverter_id]
+        < baseline_by_id[
+            inverter_id
+        ].ac_available_kw - 1e-9
+        for inverter_id in inverter_ids
+    ):
+        reasons.append(
+            "PQ_ACTIVE_POWER_CAP_APPLIED"
+        )
+
+    if (
+        curtailed_kw > 1e-9
+        and "CURTAILMENT_APPLIED" not in reasons
+    ):
+        reasons.append(
+            "CURTAILMENT_APPLIED"
+        )
+
+    if (
+        unserved_kw > 1e-7
+        and "INSUFFICIENT_AVAILABLE_POWER"
+        not in reasons
+    ):
+        reasons.append(
+            "INSUFFICIENT_AVAILABLE_POWER"
+        )
+
+    final_report = SolarPlantReport(
+        requested_target_kw=(
+            requested_target_kw
+        ),
+
+        available_power_kw=(
+            baseline.available_power_kw
+        ),
+
+        dispatched_power_kw=dispatched_kw,
+
+        curtailed_power_kw=curtailed_kw,
+
+        unserved_target_kw=unserved_kw,
+
+        grid_available=grid_available,
+
+        emergency_stop=emergency_stop,
+
+        inverter_results=tuple(results),
+
+        reasons=tuple(
+            dict.fromkeys(reasons)
+        ),
+    )
+
+    return PQPlantResult(
+        plant=final_report,
+
+        screened_reactive_kvar=q_requests,
+
+        max_active_kw_by_inverter=active_caps,
+
+        warnings=tuple(
+            dict.fromkeys(warnings)
+        ),
+    )
+
+
+========== simulator/solar/solar_timeseries.py ==========
+
+from __future__ import annotations
+from typing import Mapping
+
+from simulator.solar.pq_dispatch import (
+    PQCapability,
+)
+import csv
+from simulator.solar.inverter import InverterResult
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
+from math import isfinite
+from pathlib import Path
+
+from simulator.solar.solar_pipeline import (
+    SolarPhysicsPipeline,
+    SolarWeather,
+)
+
+
+INTERVAL = timedelta(minutes=15)
+
+
+@dataclass(frozen=True)
+class SolarIntervalInput:
+    start_utc: datetime
+    end_utc: datetime
+    weather: SolarWeather
+
+    requested_target_kw: float | None = None
+    grid_available: bool = True
+    emergency_stop: bool = False
+
+    fault_inverter_ids: frozenset[str] = frozenset()
+    maintenance_inverter_ids: frozenset[str] = frozenset()
+    pq_capabilities: Mapping[str, PQCapability] | None = None
+
+    reactive_requests_kvar: Mapping[str, float] | None = None
+
+
+@dataclass(frozen=True)
+class SolarAlarmTransition:
+    timestamp_utc: datetime
+    code: str
+    inverter_id: str | None
+    transition: str
+
+
+@dataclass(frozen=True)
+class SolarIntervalResult:
+    start_utc: datetime
+    end_utc: datetime
+
+    available_power_kw: float
+    dispatched_power_kw: float
+
+    interval_energy_kwh: float
+    cumulative_energy_kwh: float
+
+    curtailed_power_kw: float
+    unserved_target_kw: float
+
+    reasons: tuple[str, ...]
+    quality_flags: tuple[str, ...]
+    source_types: tuple[str, ...]
+    active_alarms: tuple[str, ...]
+    inverter_results: tuple[InverterResult, ...] = ()
+
+
+class SolarTimeSeriesSimulator:
+    """
+    15 dakikalik GES zaman serisi simulatoru.
+
+    Meteorolojik veriler ilgili zaman
+    araliginin ortalamasini temsil eder.
+
+    Gercek PLC/SCADA baglantisi yoktur.
+    """
+
+    def __init__(
+        self,
+        pipeline: SolarPhysicsPipeline,
+    ) -> None:
+
+        self.pipeline = pipeline
+
+        self.records: list[
+            SolarIntervalResult
+        ] = []
+
+        self.alarm_history: list[
+            SolarAlarmTransition
+        ] = []
+
+        self._active: set[
+            tuple[str, str | None]
+        ] = set()
+
+    @staticmethod
+    def _utc(
+        value: datetime,
+        name: str,
+    ) -> datetime:
+
+        if (
+            value.tzinfo is None
+            or value.utcoffset() is None
+        ):
+            raise ValueError(
+                f"{name} must be timezone-aware UTC"
+            )
+
+        if value.utcoffset() != timedelta(0):
+            raise ValueError(
+                f"{name} must use UTC offset +00:00"
+            )
+
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _detect_alarms(
+        plant,
+    ) -> set[tuple[str, str | None]]:
+
+        active: set[
+            tuple[str, str | None]
+        ] = set()
+
+        if not plant.grid_available:
+            active.add(
+                ("GRID_UNAVAILABLE", None)
+            )
+
+        if plant.emergency_stop:
+            active.add(
+                ("PLANT_EMERGENCY_STOP", None)
+            )
+
+        for inverter in plant.inverter_results:
+
+            for code in inverter.reasons:
+
+                if code in {
+                    "INVERTER_FAULT",
+                    "DC_OVERVOLTAGE",
+                    "INVALID_DC_VOLTAGE",
+                }:
+                    active.add(
+                        (code, inverter.inverter_id)
+                    )
+
+        return active
+
+    @staticmethod
+    def _alarm_label(
+        alarm: tuple[str, str | None],
+    ) -> str:
+
+        code, inverter_id = alarm
+
+        if inverter_id is None:
+            return code
+
+        return f"{code}:{inverter_id}"
+
+    def step(
+        self,
+        item: SolarIntervalInput,
+    ) -> SolarIntervalResult:
+
+        # 1. TIME VALIDATION
+
+        start = self._utc(
+            item.start_utc,
+            "start_utc",
+        )
+
+        end = self._utc(
+            item.end_utc,
+            "end_utc",
+        )
+
+        timestamp = self._utc(
+            item.weather.irradiance.timestamp,
+            "weather.timestamp",
+        )
+
+        if end - start != INTERVAL:
+            raise ValueError(
+                "Each interval must be exactly 15 minutes"
+            )
+
+        if (
+            start.minute % 15 != 0
+            or start.second != 0
+            or start.microsecond != 0
+        ):
+            raise ValueError(
+                "Interval must start on a "
+                "15-minute UTC boundary"
+            )
+
+        if timestamp != end:
+            raise ValueError(
+                "Weather timestamp must equal interval end"
+            )
+
+        if self.records:
+
+            previous_end = self.records[-1].end_utc
+
+            if start != previous_end:
+                raise ValueError(
+                    "Intervals must be consecutive "
+                    "and non-overlapping"
+                )
+
+        # 2. IRRADIANCE VALIDATION
+
+        for name in (
+            "ghi_w_m2",
+            "dni_w_m2",
+            "dhi_w_m2",
+        ):
+
+            value = getattr(
+                item.weather.irradiance,
+                name,
+            )
+
+            if (
+                not isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(
+                    f"Invalid irradiance: {name}"
+                )
+
+        # 3. SOLAR POSITION AT MIDPOINT
+
+        midpoint = start + INTERVAL / 2
+
+        weather_at_midpoint = replace(
+            item.weather,
+            irradiance=replace(
+                item.weather.irradiance,
+                timestamp=midpoint,
+            ),
+        )
+
+        # 4. RUN COMPLETE SOLAR PHYSICS
+        pq_kwargs = {}
+
+        if (
+            item.pq_capabilities is not None
+            or item.reactive_requests_kvar is not None
+        ):
+            pq_kwargs = {
+                "pq_capabilities": item.pq_capabilities,
+                "reactive_requests_kvar": (
+                    item.reactive_requests_kvar
+                ),
+            }
+        response = self.pipeline.simulate(
+            weather=weather_at_midpoint,
+
+            requested_target_kw=(
+                item.requested_target_kw
+            ),
+
+            grid_available=item.grid_available,
+
+            emergency_stop=item.emergency_stop,
+
+            fault_inverter_ids=(
+                item.fault_inverter_ids
+            ),
+
+            maintenance_inverter_ids=(
+                item.maintenance_inverter_ids
+            ),
+            **pq_kwargs,
+        )
+
+        plant = response.plant
+
+        power_kw = plant.dispatched_power_kw
+
+        if (
+            not isfinite(power_kw)
+            or power_kw < 0
+        ):
+            raise ValueError(
+                "Pipeline returned invalid power"
+            )
+
+        # 5. ENERGY CALCULATION
+
+        interval_energy_kwh = power_kw * 0.25
+
+        previous_energy = (
+            self.records[-1].cumulative_energy_kwh
+            if self.records
+            else 0.0
+        )
+
+        cumulative_energy_kwh = (
+            previous_energy + interval_energy_kwh
+        )
+
+        # 6. ALARM STATE CHANGES
+
+        active = self._detect_alarms(
+            plant
+        )
+
+        raised = active - self._active
+        cleared = self._active - active
+
+        changes = []
+
+        for code, inverter_id in sorted(raised):
+
+            changes.append(
+                SolarAlarmTransition(
+                    timestamp_utc=end,
+                    code=code,
+                    inverter_id=inverter_id,
+                    transition="RAISED",
+                )
+            )
+
+        for code, inverter_id in sorted(cleared):
+
+            changes.append(
+                SolarAlarmTransition(
+                    timestamp_utc=end,
+                    code=code,
+                    inverter_id=inverter_id,
+                    transition="CLEARED",
+                )
+            )
+
+        # 7. DATA QUALITY
+
+        quality_flags = tuple(
+            sorted({
+                flag
+                for array in response.array_reports
+                for flag in array.poa.quality_flags
+            })
+        )
+
+        source_types = tuple(
+            sorted({
+                array.poa.source_type
+                for array in response.array_reports
+            })
+        )
+
+        active_alarms = tuple(
+            sorted(
+                self._alarm_label(alarm)
+                for alarm in active
+            )
+        )
+
+        # 8. CREATE INTERVAL RESULT
+
+        result = SolarIntervalResult(
+            start_utc=start,
+            end_utc=end,
+
+            available_power_kw=(
+                plant.available_power_kw
+            ),
+
+            dispatched_power_kw=power_kw,
+
+            interval_energy_kwh=interval_energy_kwh,
+
+            cumulative_energy_kwh=cumulative_energy_kwh,
+
+            curtailed_power_kw=(
+                plant.curtailed_power_kw
+            ),
+
+            unserved_target_kw=(
+                plant.unserved_target_kw
+            ),
+
+            reasons=tuple(plant.reasons),
+
+            quality_flags=quality_flags,
+            source_types=source_types,
+            active_alarms=active_alarms,
+            inverter_results=tuple(
+                plant.inverter_results
+            ),
+        )
+
+        # Only commit internal state after success.
+
+        self.records.append(result)
+
+        self.alarm_history.extend(
+            changes
+        )
+
+        self._active = active
+
+        return result
+
+    def export_15m_csv(
+        self,
+        destination: str | Path,
+    ) -> None:
+
+        fields = (
+            "start_utc",
+            "end_utc",
+            "available_power_kw",
+            "dispatched_power_kw",
+            "interval_energy_kwh",
+            "cumulative_energy_kwh",
+            "curtailed_power_kw",
+            "unserved_target_kw",
+            "reasons",
+            "quality_flags",
+            "source_types",
+            "active_alarms",
+        )
+
+        with Path(destination).open(
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as file:
+
+            writer = csv.DictWriter(
+                file,
+                fieldnames=fields,
+            )
+
+            writer.writeheader()
+
+            for record in self.records:
+
+                writer.writerow({
+                    "start_utc": (
+                        record.start_utc.isoformat()
+                    ),
+
+                    "end_utc": (
+                        record.end_utc.isoformat()
+                    ),
+
+                    "available_power_kw": (
+                        record.available_power_kw
+                    ),
+
+                    "dispatched_power_kw": (
+                        record.dispatched_power_kw
+                    ),
+
+                    "interval_energy_kwh": (
+                        record.interval_energy_kwh
+                    ),
+
+                    "cumulative_energy_kwh": (
+                        record.cumulative_energy_kwh
+                    ),
+
+                    "curtailed_power_kw": (
+                        record.curtailed_power_kw
+                    ),
+
+                    "unserved_target_kw": (
+                        record.unserved_target_kw
+                    ),
+
+                    "reasons": ";".join(
+                        record.reasons
+                    ),
+
+                    "quality_flags": ";".join(
+                        record.quality_flags
+                    ),
+
+                    "source_types": ";".join(
+                        record.source_types
+                    ),
+
+                    "active_alarms": ";".join(
+                        record.active_alarms
+                    ),
+                })
+
+    def export_hourly_csv(
+        self,
+        destination: str | Path,
+    ) -> None:
+
+        hours: dict[
+            datetime,
+            list[SolarIntervalResult],
+        ] = {}
+
+        for record in self.records:
+
+            hour = record.start_utc.replace(
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+
+            hours.setdefault(
+                hour, []
+            ).append(record)
+
+        with Path(destination).open(
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as file:
+
+            writer = csv.writer(file)
+
+            writer.writerow((
+                "hour_start_utc",
+                "interval_count",
+                "coverage_minutes",
+                "energy_kwh",
+                "mean_power_kw",
+            ))
+
+            for hour, records in sorted(
+                hours.items()
+            ):
+
+                energy_kwh = sum(
+                    record.interval_energy_kwh
+                    for record in records
+                )
+
+                count = len(records)
+
+                mean_power_kw = (
+                    energy_kwh / (0.25 * count)
+                )
+
+                writer.writerow((
+                    hour.isoformat(),
+                    count,
+                    15 * count,
+                    energy_kwh,
+                    mean_power_kw,
+                ))
+
+
+========== simulator/solar/historian.py ==========
+
+from __future__ import annotations
+
+import json
+import sqlite3
+
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from math import isfinite
+from pathlib import Path
+
+from simulator.solar.inverter_history_adapter import (
+    append_simulated_inverter_interval,
+)
+
+from simulator.solar.inverter_history_schema import (
+    initialize_ges_inverter_schema,
+)
+
+from simulator.solar.inverter_history_writer import (
+    register_parameter_snapshot,
+)
+
+from simulator.solar.solar_timeseries import (
+    SolarTimeSeriesSimulator,
+)
+
+
+class SolarHistorian:
+    """
+    Store local simulated GES plant and inverter
+    history in SQLite.
+
+    Tables:
+    - simulation_runs
+    - production_intervals
+    - alarm_events
+    - ges_parameter_snapshots
+    - ges_inverter_intervals
+    - ges_inverter_alarm_events
+
+    Simulation only. No PLC, SCADA or OT control.
+    """
+
+    def __init__(self, db_path: str | Path):
+        self.db_path = Path(db_path)
+
+        self.db_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        self._create_schema()
+
+    # ========================================================
+    # SQLITE CONNECTION
+    # ========================================================
+
+    @contextmanager
+    def _connect(self):
+        db = sqlite3.connect(
+            self.db_path,
+            timeout=30,
+        )
+
+        db.row_factory = sqlite3.Row
+
+        db.execute(
+            "PRAGMA foreign_keys = ON"
+        )
+
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    # ========================================================
+    # DATABASE SCHEMA
+    # ========================================================
+
+    def _create_schema(self) -> None:
+        with self._connect() as db:
+
+            # All schema operations share one transaction.
+            # A failed migration is rolled back.
+            db.execute("BEGIN IMMEDIATE")
+
+            # ------------------------------------------------
+            # SIMULATION RUNS
+            # ------------------------------------------------
+
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS simulation_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    scenario TEXT NOT NULL,
+
+                    created_at_utc TEXT NOT NULL,
+
+                    interval_count INTEGER NOT NULL
+                        CHECK (interval_count > 0),
+
+                    total_energy_kwh REAL NOT NULL
+                        CHECK (total_energy_kwh >= 0)
+                )
+            """)
+
+            # ------------------------------------------------
+            # PLANT PRODUCTION INTERVALS
+            # ------------------------------------------------
+
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS production_intervals (
+                    run_id INTEGER NOT NULL
+                        REFERENCES simulation_runs(id)
+                        ON DELETE CASCADE,
+
+                    start_utc TEXT NOT NULL,
+                    end_utc TEXT NOT NULL,
+
+                    available_power_kw REAL NOT NULL
+                        CHECK (available_power_kw >= 0),
+
+                    dispatched_power_kw REAL NOT NULL
+                        CHECK (dispatched_power_kw >= 0),
+
+                    interval_energy_kwh REAL NOT NULL
+                        CHECK (interval_energy_kwh >= 0),
+
+                    cumulative_energy_kwh REAL NOT NULL
+                        CHECK (cumulative_energy_kwh >= 0),
+
+                    curtailed_power_kw REAL NOT NULL
+                        CHECK (curtailed_power_kw >= 0),
+
+                    unserved_target_kw REAL NOT NULL
+                        CHECK (unserved_target_kw >= 0),
+
+                    reasons_json TEXT NOT NULL,
+                    quality_flags_json TEXT NOT NULL,
+                    source_types_json TEXT NOT NULL,
+                    active_alarms_json TEXT NOT NULL,
+
+                    PRIMARY KEY (run_id, start_utc)
+                )
+            """)
+
+            # ------------------------------------------------
+            # PLANT ALARM HISTORY
+            # ------------------------------------------------
+
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS alarm_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    run_id INTEGER NOT NULL
+                        REFERENCES simulation_runs(id)
+                        ON DELETE CASCADE,
+
+                    detected_at_utc TEXT NOT NULL,
+
+                    code TEXT NOT NULL,
+
+                    inverter_id TEXT,
+
+                    transition TEXT NOT NULL
+                        CHECK (
+                            transition IN (
+                                'RAISED',
+                                'CLEARED'
+                            )
+                        )
+                )
+            """)
+
+            # ------------------------------------------------
+            # GES INVERTER HISTORY TABLES
+            # ------------------------------------------------
+
+            # This function adds the inverter tables
+            # without replacing existing plant tables.
+            initialize_ges_inverter_schema(db)
+
+    # ========================================================
+    # SAVE SIMULATION
+    # ========================================================
+
+    def save_simulation(
+        self,
+        simulator: SolarTimeSeriesSimulator,
+        scenario: str = "NORMAL",
+        *,
+        inverter_snapshot_payloads: dict[str, dict] | None = None,
+    ) -> int:
+
+        # ----------------------------------------------------
+        # VALIDATE SIMULATION
+        # ----------------------------------------------------
+
+        if (
+            not isinstance(scenario, str)
+            or not scenario.strip()
+        ):
+            raise ValueError(
+                "Scenario cannot be empty"
+            )
+
+        if not simulator.records:
+            raise ValueError(
+                "No simulation records to save"
+            )
+
+        for record in simulator.records:
+
+            values = (
+                record.available_power_kw,
+                record.dispatched_power_kw,
+                record.interval_energy_kwh,
+                record.cumulative_energy_kwh,
+                record.curtailed_power_kw,
+                record.unserved_target_kw,
+            )
+
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+                or value < 0
+                for value in values
+            ):
+                raise ValueError(
+                    "Invalid numeric production record"
+                )
+
+        # ----------------------------------------------------
+        # VALIDATE INVERTER IDENTITIES
+        # ----------------------------------------------------
+
+        expected_inverter_ids: tuple[str, ...] = ()
+
+        if inverter_snapshot_payloads is not None:
+
+            if not isinstance(
+                inverter_snapshot_payloads,
+                dict,
+            ):
+                raise ValueError(
+                    "Invalid inverter snapshot payload mapping"
+                )
+
+            expected_inverter_ids = tuple(
+                item.inverter_id
+                for item in simulator.records[0].inverter_results
+            )
+
+            if (
+                not expected_inverter_ids
+                or len(expected_inverter_ids)
+                != len(set(expected_inverter_ids))
+                or set(inverter_snapshot_payloads)
+                != set(expected_inverter_ids)
+            ):
+                raise ValueError(
+                    "Inverter snapshot/configuration mismatch"
+                )
+
+            for record in simulator.records:
+
+                record_ids = tuple(
+                    item.inverter_id
+                    for item in record.inverter_results
+                )
+
+                if record_ids != expected_inverter_ids:
+                    raise ValueError(
+                        "Inverter set changed across intervals"
+                    )
+
+        # ----------------------------------------------------
+        # ATOMIC DATABASE TRANSACTION
+        # ----------------------------------------------------
+
+        # The simulation run, parameter snapshots,
+        # plant intervals, inverter intervals and alarms
+        # are written within a single transaction.
+        #
+        # If any operation fails, SQLite rolls back
+        # the complete run.
+
+        with self._connect() as db:
+
+            # -----------------------------------------------
+            # CREATE SIMULATION RUN
+            # -----------------------------------------------
+
+            cursor = db.execute("""
+                INSERT INTO simulation_runs (
+                    scenario,
+                    created_at_utc,
+                    interval_count,
+                    total_energy_kwh
+                )
+                VALUES (?, ?, ?, ?)
+            """, (
+                scenario.strip(),
+                datetime.now(timezone.utc).isoformat(),
+                len(simulator.records),
+                simulator.records[-1].cumulative_energy_kwh,
+            ))
+
+            run_id = int(cursor.lastrowid)
+
+            # -----------------------------------------------
+            # REGISTER PARAMETER SNAPSHOTS
+            # -----------------------------------------------
+
+            parameter_snapshot_ids: dict[str, str] = {}
+
+            if inverter_snapshot_payloads is not None:
+
+                for inverter_id in expected_inverter_ids:
+
+                    payload = inverter_snapshot_payloads[
+                        inverter_id
+                    ]
+
+                    if (
+                        not isinstance(payload, dict)
+                        or payload.get("component_id")
+                        != inverter_id
+                    ):
+                        raise ValueError(
+                            "Snapshot component ID mismatch"
+                        )
+
+                    parameter_snapshot_ids[inverter_id] = (
+                        register_parameter_snapshot(
+                            db,
+                            payload,
+                        )
+                    )
+
+            # -----------------------------------------------
+            # SAVE 15-MINUTE PLANT + INVERTER INTERVALS
+            # -----------------------------------------------
+
+            for record in simulator.records:
+
+                # Parent plant interval is inserted first.
+
+                db.execute("""
+                    INSERT INTO production_intervals (
+                        run_id,
+                        start_utc,
+                        end_utc,
+                        available_power_kw,
+                        dispatched_power_kw,
+                        interval_energy_kwh,
+                        cumulative_energy_kwh,
+                        curtailed_power_kw,
+                        unserved_target_kw,
+                        reasons_json,
+                        quality_flags_json,
+                        source_types_json,
+                        active_alarms_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    run_id,
+                    record.start_utc.isoformat(),
+                    record.end_utc.isoformat(),
+                    record.available_power_kw,
+                    record.dispatched_power_kw,
+                    record.interval_energy_kwh,
+                    record.cumulative_energy_kwh,
+                    record.curtailed_power_kw,
+                    record.unserved_target_kw,
+                    json.dumps(record.reasons),
+                    json.dumps(record.quality_flags),
+                    json.dumps(record.source_types),
+                    json.dumps(record.active_alarms),
+                ))
+
+                # Inverter intervals reference the parent
+                # plant interval in the SAME transaction.
+
+                if inverter_snapshot_payloads is not None:
+
+                    append_simulated_inverter_interval(
+                        db,
+                        run_id=run_id,
+                        record=record,
+                        expected_inverter_ids=(
+                            expected_inverter_ids
+                        ),
+                        parameter_snapshot_ids=(
+                            parameter_snapshot_ids
+                        ),
+                    )
+
+            # -----------------------------------------------
+            # SAVE PLANT ALARM TRANSITIONS
+            # -----------------------------------------------
+
+            for event in simulator.alarm_history:
+
+                db.execute("""
+                    INSERT INTO alarm_events (
+                        run_id,
+                        detected_at_utc,
+                        code,
+                        inverter_id,
+                        transition
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    run_id,
+                    event.timestamp_utc.isoformat(),
+                    event.code,
+                    event.inverter_id,
+                    event.transition,
+                ))
+
+        # Reaching this line means the transaction
+        # was committed successfully.
+        return run_id
+
+    # ========================================================
+    # READ SIMULATION RUNS
+    # ========================================================
+
+    def list_runs(self) -> list[dict]:
+
+        with self._connect() as db:
+
+            rows = db.execute("""
+                SELECT *
+                FROM simulation_runs
+                ORDER BY id DESC
+            """).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+    # ========================================================
+    # READ PRODUCTION INTERVALS
+    # ========================================================
+
+    def get_intervals(
+        self,
+        run_id: int,
+    ) -> list[dict]:
+
+        with self._connect() as db:
+
+            rows = db.execute("""
+                SELECT *
+                FROM production_intervals
+                WHERE run_id = ?
+                ORDER BY start_utc
+            """, (
+                run_id,
+            )).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+    # ========================================================
+    # READ ALARM HISTORY
+    # ========================================================
+
+    def get_alarms(
+        self,
+        run_id: int,
+    ) -> list[dict]:
+
+        with self._connect() as db:
+
+            rows = db.execute("""
+                SELECT *
+                FROM alarm_events
+                WHERE run_id = ?
+                ORDER BY id
+            """, (
+                run_id,
+            )).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+
+========== simulator/solar/inverter_history_schema.py ==========
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+
+SCHEMA_FILE = Path(__file__).with_name(
+    "ges_history_schema.sql"
+)
+
+
+def initialize_ges_inverter_schema(
+    db: sqlite3.Connection,
+) -> None:
+    """
+    Create only ges_* tables.
+
+    Does not commit transactions.
+    Does not change existing production rows.
+    """
+
+    # 1. Foreign key enforcement must already be on.
+    if db.execute(
+        "PRAGMA foreign_keys"
+    ).fetchone()[0] != 1:
+        raise ValueError(
+            "PRAGMA foreign_keys=ON gerekli"
+        )
+
+    # 2. Verify existing plant interval parent.
+    parent = db.execute(
+        "PRAGMA table_info(production_intervals)"
+    ).fetchall()
+
+    parent_columns = {
+        row[1]
+        for row in parent
+    }
+
+    required = {
+        "run_id",
+        "start_utc",
+    }
+
+    if not required.issubset(parent_columns):
+        raise ValueError(
+            "production_intervals parent tablosu eksik"
+        )
+
+    # 3. Confirm parent has a matching unique key.
+    pk_order = [
+        row[1]
+        for row in sorted(
+            parent,
+            key=lambda item: item[5],
+        )
+        if row[5]
+    ]
+
+    unique_parent_key = (
+        pk_order == ["run_id", "start_utc"]
+    )
+
+    for index in db.execute(
+        "PRAGMA index_list(production_intervals)"
+    ):
+        if not index[2]:
+            continue
+
+        index_name = index[1].replace(
+            '"',
+            '""',
+        )
+
+        indexed_columns = [
+            row[2]
+            for row in db.execute(
+                f'PRAGMA index_info("{index_name}")'
+            )
+        ]
+
+        if indexed_columns == [
+            "run_id",
+            "start_utc",
+        ]:
+            unique_parent_key = True
+            break
+
+    if not unique_parent_key:
+        raise ValueError(
+            "production_intervals(run_id,start_utc) "
+            "UNIQUE/PK gerekli"
+        )
+
+    # 4. Apply additive schema without executescript.
+    sql = SCHEMA_FILE.read_text(
+        encoding="utf-8"
+    )
+
+    for statement in sql.split(";"):
+        if statement.strip():
+            db.execute(statement)
+
+
+========== simulator/solar/inverter_history_writer.py ==========
+
+"""
+GES Step 11.3 - Transactional inverter history writer.
+
+This module:
+- validates inverter electrical results
+- checks parent plant totals
+- stores inverter interval records
+- records alarm transitions
+- preserves parameter provenance
+
+It never commits the caller's transaction.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import sqlite3
+
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+
+
+TOL = 1e-6
+
+POWER_COLUMNS = (
+    "dc_offered_kw",
+    "dc_accepted_kw",
+    "dc_rejected_kw",
+    "ac_unclipped_kw",
+    "ac_available_kw",
+    "ac_dispatched_kw",
+    "conversion_loss_kw",
+    "clipping_loss_kw",
+    "curtailment_kw",
+    "interval_energy_kwh",
+)
+
+
+# ============================================================
+# DATA STRUCTURES
+# ============================================================
+
+@dataclass(frozen=True)
+class InverterHistoryRow:
+    run_id: int
+    inverter_id: str
+
+    start_utc: datetime
+    end_utc: datetime
+
+    dc_voltage_v: float | None
+
+    dc_offered_kw: float
+    dc_accepted_kw: float
+    dc_rejected_kw: float
+
+    ac_unclipped_kw: float
+    ac_available_kw: float
+    ac_dispatched_kw: float
+
+    conversion_loss_kw: float
+    clipping_loss_kw: float
+    curtailment_kw: float
+
+    interval_energy_kwh: float
+
+    status: str
+
+    active_alarms: tuple[str, ...]
+    reasons: tuple[str, ...]
+
+    quality_flags: tuple[str, ...]
+    source_types: tuple[str, ...]
+
+    parameter_snapshot_id: str
+    power_time_semantics: str
+
+    source_timestamp_utc: datetime | None = None
+    received_at_utc: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PlantTotals:
+    run_id: int
+
+    start_utc: datetime
+    end_utc: datetime
+
+    available_power_kw: float
+    dispatched_power_kw: float
+    interval_energy_kwh: float
+
+
+# ============================================================
+# VALIDATION HELPERS
+# ============================================================
+
+def utc_db(value: datetime) -> str:
+    """
+    Match existing APP timestamp format:
+
+    2026-06-21T10:00:00+00:00
+
+    Do not replace +00:00 with Z.
+    """
+
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+    ):
+        raise ValueError(
+            "Timezone-aware UTC timestamp required"
+        )
+
+    if value.utcoffset() != timedelta(0):
+        raise ValueError(
+            "Timestamp must have UTC offset"
+        )
+
+    precision = (
+        "microseconds"
+        if value.microsecond
+        else "seconds"
+    )
+
+    return value.astimezone(
+        timezone.utc
+    ).isoformat(timespec=precision)
+
+
+def check_number(
+    label: str,
+    value: float,
+) -> None:
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(
+            f"{label} must be nonnegative and finite"
+        )
+
+
+def approx(
+    label: str,
+    left: float,
+    right: float,
+    tol: float = TOL,
+) -> None:
+
+    if not math.isclose(
+        left,
+        right,
+        rel_tol=0,
+        abs_tol=tol,
+    ):
+        raise ValueError(
+            f"{label}: {left} != {right}"
+        )
+
+
+def check_time(
+    start: datetime,
+    end: datetime,
+) -> None:
+
+    utc_db(start)
+    utc_db(end)
+
+    if end - start != timedelta(minutes=15):
+        raise ValueError(
+            "Interval must be exactly 15 minutes"
+        )
+
+    if (
+        start.minute % 15
+        or start.second
+        or start.microsecond
+    ):
+        raise ValueError(
+            "Interval must start on UTC quarter-hour"
+        )
+
+
+# ============================================================
+# INVERTER RECORD VALIDATION
+# ============================================================
+
+def check_row(
+    row: InverterHistoryRow,
+) -> None:
+
+    if (
+        type(row.run_id) is not int
+        or row.run_id <= 0
+    ):
+        raise ValueError("Invalid run ID")
+
+    if (
+        not isinstance(row.inverter_id, str)
+        or not row.inverter_id.strip()
+    ):
+        raise ValueError("Missing inverter ID")
+
+    if (
+        not isinstance(
+            row.parameter_snapshot_id,
+            str,
+        )
+        or not row.parameter_snapshot_id.strip()
+    ):
+        raise ValueError(
+            "Missing parameter snapshot ID"
+        )
+
+    check_time(
+        row.start_utc,
+        row.end_utc,
+    )
+
+    # Reject unknown, negative and non-finite power.
+
+    for field in POWER_COLUMNS:
+        check_number(
+            field,
+            getattr(row, field),
+        )
+
+    if row.dc_voltage_v is not None:
+        check_number(
+            "dc_voltage_v",
+            row.dc_voltage_v,
+        )
+
+    # Explicit inverter statuses.
+
+    if row.status not in {
+        "RUNNING",
+        "CURTAILED",
+        "IDLE",
+        "BLOCKED",
+    }:
+        raise ValueError(
+            "Unknown inverter status"
+        )
+
+    # Quality and source metadata.
+
+    for field in (
+        "active_alarms",
+        "reasons",
+        "quality_flags",
+        "source_types",
+    ):
+
+        items = getattr(row, field)
+
+        if (
+            not isinstance(items, tuple)
+            or any(
+                not isinstance(item, str)
+                or not item.strip()
+                for item in items
+            )
+            or len(items) != len(set(items))
+        ):
+            raise ValueError(
+                f"Invalid {field}"
+            )
+
+    if (
+        not row.quality_flags
+        or not row.source_types
+    ):
+        raise ValueError(
+            "Missing quality/source tags"
+        )
+
+    if row.power_time_semantics not in {
+        "interval_mean",
+        "snapshot_constant_assumption",
+    }:
+        raise ValueError(
+            "Unknown power time semantics"
+        )
+
+    if (
+        row.power_time_semantics
+        == "snapshot_constant_assumption"
+        and "estimated" not in row.quality_flags
+    ):
+        raise ValueError(
+            "Snapshot-based power must be "
+            "flagged estimated"
+        )
+
+    for time_value in (
+        row.source_timestamp_utc,
+        row.received_at_utc,
+    ):
+        if time_value is not None:
+            utc_db(time_value)
+
+    # Electrical constraints.
+
+    if (
+        row.dc_accepted_kw
+        > row.dc_offered_kw + TOL
+    ):
+        raise ValueError(
+            "Accepted DC exceeds offered DC"
+        )
+
+    if (
+        row.ac_dispatched_kw
+        > row.ac_available_kw + TOL
+    ):
+        raise ValueError(
+            "Dispatched AC exceeds available AC"
+        )
+
+    approx(
+        "curtailment",
+        row.ac_available_kw - row.ac_dispatched_kw,
+        row.curtailment_kw,
+    )
+
+    approx(
+        "interval energy",
+        row.ac_dispatched_kw * 0.25,
+        row.interval_energy_kwh,
+        TOL * 0.25,
+    )
+
+    if row.status == "BLOCKED":
+
+        approx(
+            "blocked dispatched power",
+            row.ac_dispatched_kw,
+            0.0,
+        )
+
+        if (
+            not row.active_alarms
+            and not row.reasons
+        ):
+            raise ValueError(
+                "BLOCKED requires a reason or alarm"
+            )
+
+    else:
+
+        approx(
+            "DC balance",
+            row.dc_offered_kw - row.dc_accepted_kw,
+            row.dc_rejected_kw,
+        )
+
+        approx(
+            "conversion balance",
+            row.dc_accepted_kw - row.ac_unclipped_kw,
+            row.conversion_loss_kw,
+        )
+
+        approx(
+            "clipping balance",
+            row.ac_unclipped_kw - row.ac_available_kw,
+            row.clipping_loss_kw,
+        )
+
+
+# ============================================================
+# DATABASE TRANSACTION REQUIREMENTS
+# ============================================================
+
+def require_transaction(
+    db: sqlite3.Connection,
+) -> None:
+
+    if not db.in_transaction:
+        raise ValueError(
+            "Caller must start a transaction"
+        )
+
+    if db.execute(
+        "PRAGMA foreign_keys"
+    ).fetchone()[0] != 1:
+        raise ValueError(
+            "Enable SQLite foreign keys "
+            "before transaction"
+        )
+
+
+# ============================================================
+# CONTENT-ADDRESSED PARAMETER SNAPSHOTS
+# ============================================================
+
+def register_parameter_snapshot(
+    db: sqlite3.Connection,
+    payload: dict,
+) -> str:
+
+    """
+    Store a parameter snapshot with SHA256 identity.
+
+    Effective values and source provenance must
+    be supplied by the caller.
+    """
+
+    require_transaction(db)
+
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "Snapshot payload must be a dict"
+        )
+
+    for key in (
+        "component_id",
+        "model_id",
+    ):
+        value = payload.get(key)
+
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+        ):
+            raise ValueError(
+                f"Snapshot requires {key}"
+            )
+
+    values = payload.get("values")
+
+    if (
+        not isinstance(values, dict)
+        or not values
+    ):
+        raise ValueError(
+            "Snapshot requires parameter values"
+        )
+
+    for name, item in values.items():
+
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(item, dict)
+            or "value" not in item
+            or any(
+                not item.get(key)
+                for key in (
+                    "source_id",
+                    "source_url",
+                    "evidence",
+                )
+            )
+        ):
+            raise ValueError(
+                "Incomplete parameter provenance"
+            )
+
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    snapshot_id = hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+
+    db.execute(
+        """
+        INSERT INTO ges_parameter_snapshots
+        (
+            snapshot_id,
+            component_id,
+            model_id,
+            payload_json
+        )
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(snapshot_id) DO NOTHING
+        """,
+        (
+            snapshot_id,
+            payload["component_id"],
+            payload["model_id"],
+            canonical,
+        ),
+    )
+
+    return snapshot_id
+
+
+# ============================================================
+# ATOMIC INVERTER INTERVAL WRITER
+# ============================================================
+
+def save_inverter_interval(
+    db: sqlite3.Connection,
+    rows: list[InverterHistoryRow],
+    plant: PlantTotals,
+    *,
+    expected_inverter_ids: tuple[str, ...],
+) -> None:
+
+    """
+    Append inverter data to an existing plant interval.
+
+    The caller owns BEGIN, COMMIT and ROLLBACK.
+
+    This function:
+    - validates records
+    - checks plant totals
+    - verifies the stored parent row
+    - writes both inverters atomically
+    - records alarm transitions
+    - checks persisted totals
+
+    No automatic commit occurs.
+    """
+
+    require_transaction(db)
+
+    check_time(
+        plant.start_utc,
+        plant.end_utc,
+    )
+
+    if (
+        type(plant.run_id) is not int
+        or plant.run_id <= 0
+    ):
+        raise ValueError(
+            "Invalid plant run ID"
+        )
+
+    # Validate expected inverter identifiers.
+
+    if (
+        not expected_inverter_ids
+        or len(set(expected_inverter_ids))
+        != len(expected_inverter_ids)
+        or any(
+            not isinstance(item, str)
+            or not item.strip()
+            for item in expected_inverter_ids
+        )
+    ):
+        raise ValueError(
+            "Expected inverter IDs invalid"
+        )
+
+    actual_ids = [
+        row.inverter_id
+        for row in rows
+    ]
+
+    if (
+        len(actual_ids) != len(set(actual_ids))
+        or set(actual_ids)
+        != set(expected_inverter_ids)
+    ):
+        raise ValueError(
+            "Missing, extra, or duplicate inverter"
+        )
+
+    # Validate each inverter and its interval.
+
+    for row in rows:
+
+        check_row(row)
+
+        if (
+            row.run_id,
+            row.start_utc,
+            row.end_utc,
+        ) != (
+            plant.run_id,
+            plant.start_utc,
+            plant.end_utc,
+        ):
+            raise ValueError(
+                "Plant/inverter run or "
+                "timestamps mismatch"
+            )
+
+    # Validate plant power totals.
+
+    for field in (
+        "available_power_kw",
+        "dispatched_power_kw",
+        "interval_energy_kwh",
+    ):
+        check_number(
+            field,
+            getattr(plant, field),
+        )
+
+    approx(
+        "plant available",
+        math.fsum(
+            row.ac_available_kw
+            for row in rows
+        ),
+        plant.available_power_kw,
+    )
+
+    approx(
+        "plant dispatched",
+        math.fsum(
+            row.ac_dispatched_kw
+            for row in rows
+        ),
+        plant.dispatched_power_kw,
+    )
+
+    approx(
+        "plant energy",
+        math.fsum(
+            row.interval_energy_kwh
+            for row in rows
+        ),
+        plant.interval_energy_kwh,
+        TOL * 0.25,
+    )
+
+    # Verify actual stored production interval.
+
+    parent = db.execute(
+        """
+        SELECT
+            available_power_kw,
+            dispatched_power_kw,
+            interval_energy_kwh
+        FROM production_intervals
+        WHERE run_id = ?
+          AND start_utc = ?
+        """,
+        (
+            plant.run_id,
+            utc_db(plant.start_utc),
+        ),
+    ).fetchone()
+
+    if parent is None:
+        raise ValueError(
+            "Plant parent interval "
+            "must be saved first"
+        )
+
+    labels = (
+        "available",
+        "dispatched",
+        "energy",
+    )
+
+    expected_values = (
+        plant.available_power_kw,
+        plant.dispatched_power_kw,
+        plant.interval_energy_kwh,
+    )
+
+    tolerances = (
+        TOL,
+        TOL,
+        TOL * 0.25,
+    )
+
+    for label, stored, expected, tol in zip(
+        labels,
+        parent,
+        expected_values,
+        tolerances,
+    ):
+
+        check_number(
+            "Parent " + label,
+            stored,
+        )
+
+        approx(
+            "Parent " + label,
+            stored,
+            expected,
+            tol,
+        )
+
+    # The inverter set must remain fixed
+    # throughout a simulation run.
+
+    old_ids = {
+        record[0]
+        for record in db.execute(
+            """
+            SELECT DISTINCT inverter_id
+            FROM ges_inverter_intervals
+            WHERE run_id = ?
+            """,
+            (plant.run_id,),
+        )
+    }
+
+    if (
+        old_ids
+        and old_ids != set(expected_inverter_ids)
+    ):
+        raise ValueError(
+            "Inverter set changed within run"
+        )
+
+    # Prevent duplicate, backward or gapped writes.
+
+    for row in rows:
+
+        prior = db.execute(
+            """
+            SELECT end_utc
+            FROM ges_inverter_intervals
+            WHERE run_id = ?
+              AND inverter_id = ?
+            ORDER BY start_utc DESC
+            LIMIT 1
+            """,
+            (
+                row.run_id,
+                row.inverter_id,
+            ),
+        ).fetchone()
+
+        if (
+            prior
+            and prior[0] != utc_db(row.start_utc)
+        ):
+            raise ValueError(
+                "Overlapping/duplicate/gapped interval"
+            )
+
+    # Savepoint: either the whole interval
+    # is stored or none of its inverter rows.
+
+    db.execute(
+        "SAVEPOINT ges_inverter_insert"
+    )
+
+    try:
+
+        for row in rows:
+
+            prior = db.execute(
+                """
+                SELECT active_alarms_json
+                FROM ges_inverter_intervals
+                WHERE run_id = ?
+                  AND inverter_id = ?
+                ORDER BY start_utc DESC
+                LIMIT 1
+                """,
+                (
+                    row.run_id,
+                    row.inverter_id,
+                ),
+            ).fetchone()
+
+            previous_alarms = (
+                set(json.loads(prior[0]))
+                if prior
+                else set()
+            )
+
+            payload = asdict(row)
+
+            for name in (
+                "start_utc",
+                "end_utc",
+                "source_timestamp_utc",
+                "received_at_utc",
+            ):
+
+                value = payload[name]
+
+                payload[name] = (
+                    utc_db(value)
+                    if value is not None
+                    else None
+                )
+
+            for name in (
+                "active_alarms",
+                "reasons",
+                "quality_flags",
+                "source_types",
+            ):
+
+                payload[name + "_json"] = json.dumps(
+                    payload.pop(name),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
+
+            columns = tuple(payload)
+
+            db.execute(
+                "INSERT INTO ges_inverter_intervals ("
+                + ", ".join(columns)
+                + ") VALUES ("
+                + ", ".join(
+                    "?"
+                    for _ in columns
+                )
+                + ")",
+                tuple(
+                    payload[name]
+                    for name in columns
+                ),
+            )
+
+            # Alarm transitions are detected at
+            # the interval boundary, not at
+            # the actual physical fault instant.
+
+            alarms = set(row.active_alarms)
+
+            transitions = (
+                (
+                    alarms - previous_alarms,
+                    "RAISED",
+                ),
+                (
+                    previous_alarms - alarms,
+                    "CLEARED",
+                ),
+            )
+
+            for codes, transition in transitions:
+
+                for code in sorted(codes):
+
+                    db.execute(
+                        """
+                        INSERT INTO
+                        ges_inverter_alarm_events
+                        (
+                            run_id,
+                            inverter_id,
+                            interval_start_utc,
+                            timestamp_utc,
+                            code,
+                            transition,
+                            time_semantics
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row.run_id,
+                            row.inverter_id,
+                            utc_db(row.start_utc),
+                            utc_db(row.start_utc),
+                            code,
+                            transition,
+                            "interval_boundary_detection",
+                        ),
+                    )
+
+        # Verify stored inverter sums again.
+
+        saved = db.execute(
+            """
+            SELECT
+                COUNT(*),
+                SUM(ac_available_kw),
+                SUM(ac_dispatched_kw),
+                SUM(interval_energy_kwh)
+            FROM ges_inverter_intervals
+            WHERE run_id = ?
+              AND start_utc = ?
+            """,
+            (
+                plant.run_id,
+                utc_db(plant.start_utc),
+            ),
+        ).fetchone()
+
+        if saved[0] != len(expected_inverter_ids):
+            raise ValueError(
+                "Persisted inverter count mismatch"
+            )
+
+        stored_labels = (
+            "DB available",
+            "DB dispatched",
+            "DB energy",
+        )
+
+        for label, actual, expected, tol in zip(
+            stored_labels,
+            saved[1:],
+            expected_values,
+            tolerances,
+        ):
+
+            approx(
+                label,
+                actual,
+                expected,
+                tol,
+            )
+
+        db.execute(
+            "RELEASE SAVEPOINT ges_inverter_insert"
+        )
+
+    except BaseException:
+
+        db.execute(
+            "ROLLBACK TO SAVEPOINT ges_inverter_insert"
+        )
+
+        db.execute(
+            "RELEASE SAVEPOINT ges_inverter_insert"
+        )
+
+        raise
+
+
+========== simulator/solar/inverter_history_adapter.py ==========
+
+from __future__ import annotations
+
+import sqlite3
+
+from typing import Mapping
+
+from simulator.solar.inverter_history_writer import (
+    InverterHistoryRow,
+    PlantTotals,
+    save_inverter_interval,
+)
+
+
+def build_inverter_history_rows(
+    record,
+    run_id: int,
+    *,
+    expected_inverter_ids: tuple[str, ...],
+    parameter_snapshot_ids: Mapping[str, str],
+) -> list[InverterHistoryRow]:
+    """
+    Convert real APP inverter results into
+    Step 11 Historian records.
+
+    Plant-wide alarms are not duplicated as
+    inverter-specific alarms.
+
+    No database changes occur here.
+    """
+
+    # 1. Validate run and inverter identities.
+
+    if type(run_id) is not int or run_id <= 0:
+        raise ValueError("Invalid run_id")
+
+    if (
+        not expected_inverter_ids
+        or len(set(expected_inverter_ids))
+        != len(expected_inverter_ids)
+        or any(
+            not isinstance(item, str)
+            or not item.strip()
+            for item in expected_inverter_ids
+        )
+    ):
+        raise ValueError(
+            "Invalid expected inverter IDs"
+        )
+
+    expected = set(expected_inverter_ids)
+
+    results = tuple(record.inverter_results)
+
+    actual_ids = [
+        inverter.inverter_id
+        for inverter in results
+    ]
+
+    if (
+        len(actual_ids) != len(set(actual_ids))
+        or set(actual_ids) != expected
+    ):
+        raise ValueError(
+            "Missing, extra or duplicate inverter result"
+        )
+
+    if set(parameter_snapshot_ids) != expected:
+        raise ValueError(
+            "Missing or extra parameter snapshot"
+        )
+
+    # 2. Separate plant-wide and inverter alarms.
+
+    inverter_alarms = {
+        inverter_id: []
+        for inverter_id in expected_inverter_ids
+    }
+
+    for label in record.active_alarms:
+
+        if not isinstance(label, str):
+            raise ValueError(
+                "Invalid alarm label"
+            )
+
+        if ":" not in label:
+            # Unscoped plant alarm.
+            # Existing alarm_events handles it.
+            continue
+
+        code, target_id = label.split(":", 1)
+
+        if not code or target_id not in expected:
+            raise ValueError(
+                f"Unknown inverter alarm target: {label}"
+            )
+
+        if code not in inverter_alarms[target_id]:
+            inverter_alarms[target_id].append(code)
+
+    # 3. Preserve record provenance.
+
+    quality_flags = tuple(
+        dict.fromkeys(
+            (*record.quality_flags, "estimated")
+        )
+    )
+
+    source_types = tuple(record.source_types)
+
+    if not source_types:
+        raise ValueError(
+            "Missing simulation source types"
+        )
+
+    # Snapshot power is assumed constant
+    # across the 15-minute interval.
+    power_time_semantics = (
+        "snapshot_constant_assumption"
+    )
+
+    # 4. Convert each inverter.
+
+    rows = []
+
+    for inverter in results:
+
+        inverter_id = inverter.inverter_id
+
+        snapshot_id = parameter_snapshot_ids[
+            inverter_id
+        ]
+
+        if (
+            not isinstance(snapshot_id, str)
+            or not snapshot_id.strip()
+        ):
+            raise ValueError(
+                "Empty parameter snapshot ID"
+            )
+
+        status = (
+            inverter.status.value
+            if hasattr(inverter.status, "value")
+            else inverter.status
+        )
+
+        row = InverterHistoryRow(
+            run_id=run_id,
+            inverter_id=inverter_id,
+
+            start_utc=record.start_utc,
+            end_utc=record.end_utc,
+
+            # The current InverterResult does not
+            # carry an actual DC voltage sample.
+            dc_voltage_v=None,
+
+            dc_offered_kw=inverter.dc_offered_kw,
+            dc_accepted_kw=inverter.dc_accepted_kw,
+            dc_rejected_kw=inverter.dc_rejected_kw,
+
+            ac_unclipped_kw=inverter.ac_unclipped_kw,
+            ac_available_kw=inverter.ac_available_kw,
+            ac_dispatched_kw=inverter.ac_dispatched_kw,
+
+            conversion_loss_kw=(
+                inverter.conversion_loss_kw
+            ),
+            clipping_loss_kw=(
+                inverter.clipping_loss_kw
+            ),
+            curtailment_kw=inverter.curtailment_kw,
+
+            interval_energy_kwh=(
+                inverter.ac_dispatched_kw * 0.25
+            ),
+
+            status=status,
+
+            active_alarms=tuple(
+                inverter_alarms[inverter_id]
+            ),
+
+            reasons=tuple(inverter.reasons),
+
+            quality_flags=quality_flags,
+            source_types=source_types,
+
+            parameter_snapshot_id=snapshot_id,
+            power_time_semantics=power_time_semantics,
+
+            # No original sensor or reception
+            # timestamps exist in this result.
+            source_timestamp_utc=None,
+            received_at_utc=None,
+        )
+
+        rows.append(row)
+
+    return rows
+
+
+def append_simulated_inverter_interval(
+    db: sqlite3.Connection,
+    *,
+    run_id: int,
+    record,
+    expected_inverter_ids: tuple[str, ...],
+    parameter_snapshot_ids: Mapping[str, str],
+) -> None:
+    """
+    Append real APP simulation results
+    inside the caller's existing transaction.
+
+    The parent production_intervals row
+    must already exist.
+
+    Does not commit.
+    """
+
+    rows = build_inverter_history_rows(
+        record,
+        run_id,
+        expected_inverter_ids=expected_inverter_ids,
+        parameter_snapshot_ids=parameter_snapshot_ids,
+    )
+
+    plant = PlantTotals(
+        run_id=run_id,
+        start_utc=record.start_utc,
+        end_utc=record.end_utc,
+        available_power_kw=record.available_power_kw,
+        dispatched_power_kw=record.dispatched_power_kw,
+        interval_energy_kwh=record.interval_energy_kwh,
+    )
+
+    save_inverter_interval(
+        db,
+        rows,
+        plant,
+        expected_inverter_ids=expected_inverter_ids,
+    )
+
+
+========== simulator/solar/inverter_snapshot_payloads.py ==========
+
+from __future__ import annotations
+
+import json
+
+from dataclasses import asdict, is_dataclass
+
+
+SOURCE_ID = "APP_SYNTHETIC_GES_DEMO"
+SOURCE_URL = "project://demo_ges_timeseries.py"
+MODEL_ID = "APP_SYNTHETIC_GES_DEMO_V1"
+
+
+def build_demo_inverter_snapshot_payloads(
+    pipeline,
+) -> dict[str, dict]:
+    """
+    Capture the configuration actually used by
+    the APP synthetic GES demo.
+
+    Includes inverter, PV array, module, surface,
+    and site settings.
+
+    Values are NOT manufacturer-verified hardware
+    parameters.
+    """
+
+    if not pipeline.assets:
+        raise ValueError("No solar assets")
+
+    snapshots = {}
+
+    for asset in pipeline.assets:
+        inverter_id = asset.inverter.inverter_id
+
+        if inverter_id in snapshots:
+            raise ValueError("Duplicate inverter ID")
+
+        values = {}
+
+        components = (
+            ("inverter", asset.inverter),
+            ("array", asset.array),
+            ("surface", asset.surface),
+            ("site", pipeline.site),
+        )
+
+        for prefix, component in components:
+            if not is_dataclass(component):
+                raise ValueError(
+                    f"{prefix} is not a dataclass"
+                )
+
+            for name, value in asdict(
+                component
+            ).items():
+
+                # Already stored as component_id.
+                if (
+                    prefix == "inverter"
+                    and name == "inverter_id"
+                ):
+                    continue
+
+                values[f"{prefix}.{name}"] = {
+                    "value": value,
+                    "source_id": SOURCE_ID,
+                    "source_url": SOURCE_URL,
+                    "evidence": (
+                        "Synthetic APP demo configuration; "
+                        "not an OEM datasheet"
+                    ),
+                }
+
+        payload = {
+            "component_id": inverter_id,
+            "model_id": MODEL_ID,
+            "values": values,
+        }
+
+        # Reject parameters that cannot be
+        # stored reliably as JSON.
+        try:
+            json.dumps(
+                payload,
+                allow_nan=False,
+                sort_keys=True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid configuration for {inverter_id}"
+            ) from exc
+
+        snapshots[inverter_id] = payload
+
+    return snapshots
+
+
+========== simulator/solar/pv_array.py ==========
+"""PV array DC model: De Soto five parameters + single-diode MPP.
+
+No inverter, grid, MPPT control loop, shading geometry, spectral or AOI
+correction is implemented here. The optical transmission factor is a
+simplified aggregate effective-irradiance factor, not a detailed shadow model.
+
+Model parameter values below are synthetic examples, NOT manufacturer data.
+To use equipment-specific values, obtain matched De Soto parameters from
+an authorized module dataset / manufacturer model and verify them against
+reference curves; a datasheet's rated power alone is insufficient.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import isfinite
+
+import pvlib
+
+from simulator.solar.solar_temperature import (
+    FaimanParameters,
+    PVTemperature,
+    calculate_pv_temperature,
+)
+
+
+@dataclass(frozen=True)
+class DeSotoModuleParameters:
+    # Reference module (not cell) parameters, at 1000 W/m², 25 °C.
+    alpha_sc_a_per_c: float
+    a_ref_v: float
+    i_l_ref_a: float
+    i_o_ref_a: float
+    r_sh_ref_ohm: float
+    r_s_ohm: float
+    eg_ref_ev: float = 1.121
+    deg_dt_ev_per_k: float = -0.0002677
+
+
+@dataclass(frozen=True)
+class PVArrayConfiguration:
+    modules_per_string: int
+    parallel_strings: int
+    module: DeSotoModuleParameters
+    optical_transmission_factor: float = 1.0
+
+
+@dataclass(frozen=True)
+class PVArrayDCResult:
+    poa_global_w_m2: float
+    effective_irradiance_w_m2: float
+    temperature: PVTemperature
+    module_isc_a: float
+    module_voc_v: float
+    module_imp_a: float
+    module_vmp_v: float
+    module_pmp_w: float
+    array_vmp_v: float
+    array_imp_a: float
+    array_pmp_kw: float
+    source_type: str
+    source_quality_flags: tuple[str, ...]
+    model: str = "desoto+singlediode"
+
+
+def _finite(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+    return float(value)
+
+
+def _positive(value: float, name: str) -> float:
+    v = _finite(value, name)
+    if v <= 0:
+        raise ValueError(f"{name} must be positive")
+    return v
+
+
+def _validate_config(config: PVArrayConfiguration) -> DeSotoModuleParameters:
+    if not isinstance(config.modules_per_string, int) or isinstance(config.modules_per_string, bool) or config.modules_per_string < 1:
+        raise ValueError("modules_per_string must be a positive integer")
+    if not isinstance(config.parallel_strings, int) or isinstance(config.parallel_strings, bool) or config.parallel_strings < 1:
+        raise ValueError("parallel_strings must be a positive integer")
+    factor = _finite(config.optical_transmission_factor, "optical_transmission_factor")
+    if not 0.0 <= factor <= 1.0:
+        raise ValueError("optical_transmission_factor must be in [0,1]")
+    m = config.module
+    _finite(m.alpha_sc_a_per_c, "alpha_sc_a_per_c")
+    _positive(m.a_ref_v, "a_ref_v")
+    _positive(m.i_l_ref_a, "i_l_ref_a")
+    _positive(m.i_o_ref_a, "i_o_ref_a")
+    _positive(m.r_sh_ref_ohm, "r_sh_ref_ohm")
+    r_s = _finite(m.r_s_ohm, "r_s_ohm")
+    if r_s < 0:
+        raise ValueError("r_s_ohm cannot be negative")
+    _positive(m.eg_ref_ev, "eg_ref_ev")
+    _finite(m.deg_dt_ev_per_k, "deg_dt_ev_per_k")
+    return m
+
+
+def calculate_pv_array_dc(
+    poa_global_w_m2: float,
+    ambient_temperature_c: float,
+    wind_speed_m_s: float,
+    config: PVArrayConfiguration,
+    temperature_params: FaimanParameters | None = None,
+    source_type: str = "DIRECT_POA_INPUT",
+    source_quality_flags: tuple[str, ...] = (),
+) -> PVArrayDCResult:
+    """Calculate DC maximum power for identical series/parallel PV modules.
+
+    This returns DC available maximum-power-point estimates, not AC power.
+    It does not command an inverter or guarantee the estimated power is
+    achievable under all electrical/topological/thermal constraints.
+    """
+    m = _validate_config(config)
+    poa = _finite(poa_global_w_m2, "poa_global_w_m2")
+    if poa < 0:
+        raise ValueError("poa_global_w_m2 cannot be negative")
+    temp = calculate_pv_temperature(
+        poa_global_w_m2=poa,
+        ambient_temperature_c=ambient_temperature_c,
+        wind_speed_m_s=wind_speed_m_s,
+        params=temperature_params,
+    )
+    effective = poa * config.optical_transmission_factor
+    if effective == 0.0:
+        return PVArrayDCResult(
+            poa_global_w_m2=poa,
+            effective_irradiance_w_m2=0.0,
+            temperature=temp,
+            module_isc_a=0.0,
+            module_voc_v=0.0,
+            module_imp_a=0.0,
+            module_vmp_v=0.0,
+            module_pmp_w=0.0,
+            array_vmp_v=0.0,
+            array_imp_a=0.0,
+            array_pmp_kw=0.0,
+            source_type=source_type,
+            source_quality_flags=source_quality_flags,
+        )
+
+    photocurrent, saturation_current, r_s, r_sh, nnsvth = pvlib.pvsystem.calcparams_desoto(
+        effective_irradiance=effective,
+        temp_cell=temp.cell_temperature_c,
+        alpha_sc=m.alpha_sc_a_per_c,
+        a_ref=m.a_ref_v,
+        I_L_ref=m.i_l_ref_a,
+        I_o_ref=m.i_o_ref_a,
+        R_sh_ref=m.r_sh_ref_ohm,
+        R_s=m.r_s_ohm,
+        EgRef=m.eg_ref_ev,
+        dEgdT=m.deg_dt_ev_per_k,
+    )
+    curve = pvlib.pvsystem.singlediode(
+        photocurrent=photocurrent,
+        saturation_current=saturation_current,
+        resistance_series=r_s,
+        resistance_shunt=r_sh,
+        nNsVth=nnsvth,
+        method="lambertw",
+    )
+    def point(key: str) -> float:
+        value = float(curve[key])
+        if not isfinite(value) or value < -1.0e-6:
+            raise ValueError(f"De Soto model generated invalid {key}")
+        return max(0.0, value)
+
+    isc = point("i_sc")
+    voc = point("v_oc")
+    imp = point("i_mp")
+    vmp = point("v_mp")
+    pmp = point("p_mp")
+    array_vmp = vmp * config.modules_per_string
+    array_imp = imp * config.parallel_strings
+    array_pmp_kw = pmp * config.modules_per_string * config.parallel_strings / 1000.0
+    return PVArrayDCResult(
+        poa_global_w_m2=poa,
+        effective_irradiance_w_m2=effective,
+        temperature=temp,
+        module_isc_a=isc,
+        module_voc_v=voc,
+        module_imp_a=imp,
+        module_vmp_v=vmp,
+        module_pmp_w=pmp,
+        array_vmp_v=array_vmp,
+        array_imp_a=array_imp,
+        array_pmp_kw=array_pmp_kw,
+        source_type=source_type,
+        source_quality_flags=source_quality_flags,
+    )
+
+
+def calculate_pv_array_from_poa(
+    poa_result: "POAResult",
+    ambient_temperature_c: float,
+    wind_speed_m_s: float,
+    config: PVArrayConfiguration,
+    temperature_params: FaimanParameters | None = None,
+) -> PVArrayDCResult:
+    """Feed previous GHI/DNI/DHI -> POA layer into the DC array model."""
+    from simulator.solar.solar_resource import POAResult
+
+    if not isinstance(poa_result, POAResult):
+        raise TypeError("poa_result must be a POAResult")
+    return calculate_pv_array_dc(
+        poa_global_w_m2=poa_result.poa_global_w_m2,
+        ambient_temperature_c=ambient_temperature_c,
+        wind_speed_m_s=wind_speed_m_s,
+        config=config,
+        temperature_params=temperature_params,
+        source_type=poa_result.source_type,
+        source_quality_flags=poa_result.quality_flags,
+    )
+
+
+def synthetic_demo_module() -> DeSotoModuleParameters:
+    """Synthetic De Soto values solely for tests / local demonstration.
+
+    DO NOT represent these values as a real panel, datasheet or calibrated
+    model. Real deployment requires documented reference parameters.
+    """
+    return DeSotoModuleParameters(
+        alpha_sc_a_per_c=0.005,
+        a_ref_v=2.0,
+        i_l_ref_a=13.5,
+        i_o_ref_a=1e-10,
+        r_sh_ref_ohm=400.0,
+        r_s_ohm=0.30,
+    )
+
+
+========== simulator/solar/solar_resource.py ==========
+"""Solar resource to plane-of-array (POA) irradiance conversion.
+# güneş konumu ve GHI/DNI/DHI -> POA hesabu
+Simulator-only foundation. Uses published pvlib solar-position and
+Perez-Driesse sky transposition methods. This is NOT a complete PV energy
+model: shading, spectral and angle-of-incidence losses are not included.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from math import isfinite
+
+import pandas as pd
+import pvlib
+
+
+@dataclass(frozen=True)
+class SolarSite:
+    latitude_deg: float
+    longitude_deg: float
+    altitude_m: float = 0.0
+
+
+@dataclass(frozen=True)
+class PVSurface:
+    tilt_deg: float
+    azimuth_deg: float
+    albedo: float = 0.20
+
+
+@dataclass(frozen=True)
+class IrradianceSample:
+    timestamp: datetime
+    ghi_w_m2: float
+    dni_w_m2: float
+    dhi_w_m2: float
+    source_type: str = "SYNTHETIC"
+
+
+@dataclass(frozen=True)
+class POAResult:
+    timestamp_utc: datetime
+    apparent_zenith_deg: float
+    solar_azimuth_deg: float
+    poa_global_w_m2: float
+    poa_direct_w_m2: float
+    poa_sky_diffuse_w_m2: float
+    poa_ground_diffuse_w_m2: float
+    sun_above_horizon: bool
+    source_type: str
+    quality_flags: tuple[str, ...]
+    transposition_model: str = "perez-driesse"
+
+
+def _finite(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+    return float(value)
+
+
+def _validate(site: SolarSite, surface: PVSurface, sample: IrradianceSample) -> datetime:
+    lat = _finite(site.latitude_deg, "latitude_deg")
+    lon = _finite(site.longitude_deg, "longitude_deg")
+    _finite(site.altitude_m, "altitude_m")
+    tilt = _finite(surface.tilt_deg, "tilt_deg")
+    azimuth = _finite(surface.azimuth_deg, "azimuth_deg")
+    albedo = _finite(surface.albedo, "albedo")
+
+    if not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
+        raise ValueError("site latitude/longitude is out of range")
+    if not 0.0 <= tilt <= 90.0:
+        raise ValueError("surface tilt must be between 0 and 90 degrees")
+    if not 0.0 <= azimuth < 360.0:
+        raise ValueError("surface azimuth must be in [0, 360) degrees")
+    if not 0.0 <= albedo <= 1.0:
+        raise ValueError("albedo must be between 0 and 1")
+
+    for name in ("ghi_w_m2", "dni_w_m2", "dhi_w_m2"):
+        if _finite(getattr(sample, name), name) < 0.0:
+            raise ValueError(f"{name} cannot be negative")
+
+    if not isinstance(sample.timestamp, datetime) or sample.timestamp.tzinfo is None:
+        raise ValueError("timestamp must be timezone-aware")
+    if sample.timestamp.utcoffset() is None:
+        raise ValueError("timestamp needs a valid UTC offset")
+    if sample.source_type not in {"SYNTHETIC", "MEASURED", "SATELLITE", "REANALYSIS", "FORECAST"}:
+        raise ValueError("source_type is not recognized")
+
+    return sample.timestamp.astimezone(timezone.utc)
+
+
+def calculate_poa(
+    site: SolarSite,
+    surface: PVSurface,
+    sample: IrradianceSample,
+) -> POAResult:
+    """Convert GHI, DNI, DHI to tilted-plane irradiance.
+
+    Assumptions: fixed-tilt, unobstructed surface, isotropic ground reflection;
+    Perez-Driesse for diffuse sky. Time must have a timezone. Directions use
+    pvlib conventions: north=0, east=90, south=180, west=270 degrees.
+
+    No measured resource data are created or fetched by this function.
+    """
+    timestamp_utc = _validate(site, surface, sample)
+    times = pd.DatetimeIndex([timestamp_utc])
+    sun = pvlib.solarposition.get_solarposition(
+        times,
+        latitude=float(site.latitude_deg),
+        longitude=float(site.longitude_deg),
+        altitude=float(site.altitude_m),
+    )
+    zenith = float(sun["apparent_zenith"].iloc[0])
+    azimuth = float(sun["azimuth"].iloc[0])
+
+    flags: list[str] = []
+    if zenith >= 90.0:
+        if max(sample.ghi_w_m2, sample.dni_w_m2, sample.dhi_w_m2) > 0.0:
+            flags.append("NONZERO_IRRADIANCE_WHILE_SUN_BELOW_HORIZON")
+        return POAResult(
+            timestamp_utc, zenith, azimuth,
+            0.0, 0.0, 0.0, 0.0,
+            False, sample.source_type, tuple(flags),
+        )
+
+    # A useful data-quality diagnostic; no arbitrary rejection of measurements.
+    # For consistent simultaneous GHI/DNI/DHI, closure error is near zero.
+    from math import cos, radians
+    predicted_ghi = sample.dhi_w_m2 + sample.dni_w_m2 * max(0.0, cos(radians(zenith)))
+    if abs(sample.ghi_w_m2 - predicted_ghi) > max(50.0, 0.15 * max(1.0, sample.ghi_w_m2)):
+        flags.append("HORIZONTAL_IRRADIANCE_CLOSURE_WARNING")
+
+    dni_extra = float(pvlib.irradiance.get_extra_radiation(times).iloc[0])
+    components = pvlib.irradiance.get_total_irradiance(
+        surface_tilt=surface.tilt_deg,
+        surface_azimuth=surface.azimuth_deg,
+        solar_zenith=zenith,
+        solar_azimuth=azimuth,
+        dni=sample.dni_w_m2,
+        ghi=sample.ghi_w_m2,
+        dhi=sample.dhi_w_m2,
+        dni_extra=dni_extra,
+        albedo=surface.albedo,
+        model="perez-driesse",
+    )
+
+    def physical(name: str) -> float:
+        raw = float(components[name])
+        if not isfinite(raw):
+            raise ValueError(f"pvlib calculated non-finite {name}")
+        if raw < -1e-6:
+            raise ValueError(f"pvlib calculated negative {name}")
+        return max(0.0, raw)
+
+    return POAResult(
+        timestamp_utc=timestamp_utc,
+        apparent_zenith_deg=zenith,
+        solar_azimuth_deg=azimuth,
+        poa_global_w_m2=physical("poa_global"),
+        poa_direct_w_m2=physical("poa_direct"),
+        poa_sky_diffuse_w_m2=physical("poa_sky_diffuse"),
+        poa_ground_diffuse_w_m2=physical("poa_ground_diffuse"),
+        sun_above_horizon=True,
+        source_type=sample.source_type,
+        quality_flags=tuple(flags),
+    )
+
+
+========== simulator/solar/solar_temperature.py ==========
+"""Faiman PV temperature layer; simulation only, no field controls.
+
+References:
+- pvlib.temperature.faiman (pvlib 0.16.1 API)
+- Faiman, D. (2008), Progress in Photovoltaics, 16, 307-315.
+
+Note: Faiman describes an empirical cell/module temperature. The optional
+cell-to-module offset is a demonstrative, separately calibrated correction;
+its default is zero to avoid claiming an unverified temperature difference.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import isfinite
+
+import pvlib
+
+
+@dataclass(frozen=True)
+class FaimanParameters:
+    u0_w_m2_k: float = 25.0
+    u1_w_s_m3_k: float = 6.84
+    cell_over_module_c_at_1000w_m2: float = 0.0
+
+
+@dataclass(frozen=True)
+class PVTemperature:
+    module_temperature_c: float
+    cell_temperature_c: float
+    model: str = "faiman"
+
+
+def _number(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+    return float(value)
+
+
+def calculate_pv_temperature(
+    poa_global_w_m2: float,
+    ambient_temperature_c: float,
+    wind_speed_m_s: float,
+    params: FaimanParameters | None = None,
+) -> PVTemperature:
+    """Estimate module and cell temperature under POA irradiance.
+
+    The wind speed must correspond to the measurement height for which
+    u0/u1 were calibrated. The default u0/u1 are not plant-specific.
+    """
+    p = params if params is not None else FaimanParameters()
+    irradiance = _number(poa_global_w_m2, "poa_global_w_m2")
+    ambient = _number(ambient_temperature_c, "ambient_temperature_c")
+    wind = _number(wind_speed_m_s, "wind_speed_m_s")
+    u0 = _number(p.u0_w_m2_k, "u0_w_m2_k")
+    u1 = _number(p.u1_w_s_m3_k, "u1_w_s_m3_k")
+    correction = _number(p.cell_over_module_c_at_1000w_m2, "cell_over_module_c_at_1000w_m2")
+
+    if irradiance < 0:
+        raise ValueError("poa_global_w_m2 cannot be negative")
+    if wind < 0:
+        raise ValueError("wind_speed_m_s cannot be negative")
+    if ambient <= -273.15:
+        raise ValueError("ambient_temperature_c must be above absolute zero")
+    if u0 <= 0 or u1 < 0:
+        raise ValueError("Faiman coefficients require u0 > 0, u1 >= 0")
+    if correction < 0:
+        raise ValueError("cell_over_module_c_at_1000w_m2 cannot be negative")
+
+    module = float(pvlib.temperature.faiman(
+        poa_global=irradiance,
+        temp_air=ambient,
+        wind_speed=wind,
+        u0=u0,
+        u1=u1,
+    ))
+    cell = module + correction * irradiance / 1000.0
+    if not isfinite(module) or not isfinite(cell) or cell <= -273.15:
+        raise ValueError("PV temperature calculation is not physically valid")
+    return PVTemperature(module_temperature_c=module, cell_temperature_c=cell)
+
+
+========== simulator/solar/ac_power_limits.py ==========
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import hypot, isfinite, sqrt
+
+
+# ============================================================
+# AC POWER CAPABILITY - SIMULATION SCREENING ONLY
+# ============================================================
+
+
+@dataclass(frozen=True)
+class ACOperatingRequest:
+    nameplate_kva: float
+    requested_active_kw: float
+    requested_reactive_kvar: float
+
+    # Optional externally established operating limit.
+    # This is NOT calculated from temperature automatically.
+    temperature_limit_kva: float | None = None
+    temperature_limit_source: str | None = None
+
+
+@dataclass(frozen=True)
+class ACPowerScreeningResult:
+    applied_kva_limit: float
+
+    requested_apparent_kva: float
+    requested_reactive_kvar: float
+
+    max_active_kw: float | None
+    candidate_active_kw: float | None
+    active_shortfall_kw: float | None
+
+    candidate_power_factor: float | None
+
+    status: str
+    reasons: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+    @property
+    def request_is_feasible(self) -> bool:
+        return self.status == "WITHIN_CAPABILITY"
+
+
+def _validate_number(
+    name: str,
+    value: float,
+    allow_zero: bool = True,
+) -> float:
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not isfinite(value)
+    ):
+        raise ValueError(f"{name} must be finite")
+
+    if allow_zero:
+        valid = value >= 0
+    else:
+        valid = value > 0
+
+    if not valid:
+        raise ValueError(f"{name} outside valid range")
+
+    return float(value)
+
+
+def evaluate_ac_power(
+    request: ACOperatingRequest,
+) -> ACPowerScreeningResult:
+    """
+    Evaluate a simplified P-Q apparent-power envelope.
+
+    Does not model:
+    - OEM-specific capability curves
+    - Grid voltage/frequency restrictions
+    - DC availability
+    - Grid protection
+    - Autonomous equipment commands
+
+    Unknown thermal capability is explicitly reported.
+    """
+
+    # 1. Validate operating request.
+
+    nameplate = _validate_number(
+        "nameplate_kva",
+        request.nameplate_kva,
+        allow_zero=False,
+    )
+
+    requested_p = _validate_number(
+        "requested_active_kw",
+        request.requested_active_kw,
+    )
+
+    requested_q = request.requested_reactive_kvar
+
+    if (
+        isinstance(requested_q, bool)
+        or not isinstance(requested_q, (int, float))
+        or not isfinite(requested_q)
+    ):
+        raise ValueError(
+            "requested_reactive_kvar must be finite"
+        )
+
+    requested_q = float(requested_q)
+
+    # 2. Determine capacity available for screening.
+
+    warnings = []
+
+    if request.temperature_limit_kva is None:
+
+        if request.temperature_limit_source is not None:
+            raise ValueError(
+                "Temperature limit source without a limit"
+            )
+
+        applied_limit = nameplate
+
+        warnings.append(
+            "THERMAL_CAPABILITY_NOT_VERIFIED"
+        )
+
+    else:
+
+        thermal_limit = _validate_number(
+            "temperature_limit_kva",
+            request.temperature_limit_kva,
+            allow_zero=False,
+        )
+
+        if thermal_limit > nameplate:
+            raise ValueError(
+                "Temperature limit exceeds nameplate"
+            )
+
+        source = request.temperature_limit_source
+
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError(
+                "Temperature limit requires a source"
+            )
+
+        applied_limit = thermal_limit
+
+        if thermal_limit < nameplate:
+            warnings.append(
+                "THERMAL_KVA_LIMIT_APPLIED"
+            )
+
+    # 3. Calculate requested apparent power.
+
+    requested_s = hypot(requested_p, requested_q)
+
+    # 4. Check reactive power feasibility first.
+
+    if abs(requested_q) > applied_limit:
+
+        return ACPowerScreeningResult(
+            applied_kva_limit=applied_limit,
+            requested_apparent_kva=requested_s,
+            requested_reactive_kvar=requested_q,
+            max_active_kw=None,
+            candidate_active_kw=None,
+            active_shortfall_kw=None,
+            candidate_power_factor=None,
+            status="REACTIVE_REQUEST_INFEASIBLE",
+            reasons=(
+                "REACTIVE_REQUEST_EXCEEDS_KVA_LIMIT",
+            ),
+            warnings=tuple(warnings),
+        )
+
+    # 5. Active power boundary for this Q request.
+
+    max_active = sqrt(
+        max(
+            0.0,
+            applied_limit**2 - requested_q**2,
+        )
+    )
+
+    candidate_active = min(requested_p, max_active)
+
+    shortfall = max(
+        0.0,
+        requested_p - candidate_active,
+    )
+
+    # 6. Power factor at the candidate operating point.
+
+    candidate_s = hypot(
+        candidate_active,
+        requested_q,
+    )
+
+    power_factor = (
+        candidate_active / candidate_s
+        if candidate_s > 0
+        else None
+    )
+
+    # 7. Determine screening result.
+
+    if shortfall > 1e-9:
+        status = "ACTIVE_POWER_LIMITED"
+        reasons = (
+            "ACTIVE_POWER_EXCEEDS_KVA_ENVELOPE",
+        )
+    else:
+        status = "WITHIN_CAPABILITY"
+        reasons = ()
+
+    return ACPowerScreeningResult(
+        applied_kva_limit=applied_limit,
+        requested_apparent_kva=requested_s,
+        requested_reactive_kvar=requested_q,
+        max_active_kw=max_active,
+        candidate_active_kw=candidate_active,
+        active_shortfall_kw=shortfall,
+        candidate_power_factor=power_factor,
+        status=status,
+        reasons=reasons,
+        warnings=tuple(warnings),
+    )
+
+
+========== demo_ges_timeseries.py ==========
+from __future__ import annotations
+from simulator.solar.historian import SolarHistorian
+import argparse
+import csv
+from pathlib import Path
+from simulator.solar.inverter_snapshot_payloads import (
+    build_demo_inverter_snapshot_payloads,
+)
+
+from simulator.solar.solar_resource import (
+    PVSurface,
+    SolarSite,
+)
+
+from simulator.solar.pv_array import (
+    PVArrayConfiguration,
+    synthetic_demo_module,
+)
+
+from simulator.solar.inverter import InverterConfig
+
+from simulator.solar.solar_pipeline import (
+    SolarAsset,
+    SolarPhysicsPipeline,
+)
+
+from simulator.solar.solar_timeseries import (
+    SolarIntervalInput,
+    SolarTimeSeriesSimulator,
+)
+
+from simulator.solar.weather_io import (
+    load_weather_intervals_csv,
+)
+
+
+# ============================================================
+# DEMO GES CONFIGURATION
+# ============================================================
+
+def build_demo_pipeline() -> SolarPhysicsPipeline:
+    """
+    Creates a synthetic two-inverter solar plant.
+    No real equipment is connected.
+    """
+
+    module = synthetic_demo_module()
+
+    assets = []
+
+    for inverter_id in ("INV_1", "INV_2"):
+
+        inverter = InverterConfig(
+            inverter_id=inverter_id,
+            rated_ac_kw=10.0,
+            nominal_efficiency=0.96,
+            mppt_min_v=200.0,
+            mppt_max_v=800.0,
+            max_dc_voltage_v=1000.0,
+            max_dc_current_a=30.0,
+        )
+
+        array = PVArrayConfiguration(
+            modules_per_string=10,
+            parallel_strings=2,
+            module=module,
+        )
+
+        assets.append(
+            SolarAsset(
+                inverter=inverter,
+                array=array,
+                surface=PVSurface(
+                    tilt_deg=30.0,
+                    azimuth_deg=180.0,
+                ),
+            )
+        )
+
+    site = SolarSite(
+        latitude_deg=39.93,
+        longitude_deg=32.86,
+    )
+
+    return SolarPhysicsPipeline(
+        site=site,
+        assets=assets,
+    )
+
+
+# ============================================================
+# RUN COMPLETE SOLAR SIMULATION
+# ============================================================
+
+def run_demo(
+    weather_file: str | Path,
+    output_directory: str | Path,
+    grid_loss_interval_index: int | None = None,
+) -> SolarTimeSeriesSimulator:
+
+    weather_rows = load_weather_intervals_csv(
+        weather_file
+    )
+
+
+    if grid_loss_interval_index is not None:
+        if not (
+            0 <= grid_loss_interval_index < len(weather_rows)
+        ):
+            raise ValueError(
+                "Grid loss interval index is out of range"
+            )
+
+    # Build the pipeline for EVERY scenario.
+    pipeline = build_demo_pipeline()
+
+    simulator = SolarTimeSeriesSimulator(
+        pipeline
+    )
+
+
+    print()
+    print("AUTONOMOUS PLANT PLATFORM - GES DEMO")
+    print("SYNTHETIC DATA ONLY")
+    print("-" * 62)
+
+    for index, row in enumerate(weather_rows):
+
+        # Normal operation except the selected
+        # simulated grid-loss interval.
+        grid_available = (
+            index != grid_loss_interval_index
+        )
+
+        interval = SolarIntervalInput(
+            start_utc=row.start_utc,
+            end_utc=row.end_utc,
+            weather=row.weather,
+            requested_target_kw=None,
+            grid_available=grid_available,
+            emergency_stop=False,
+        )
+
+        result = simulator.step(interval)
+
+        print(
+            f"{result.start_utc.strftime('%H:%M')}"
+            " - "
+            f"{result.end_utc.strftime('%H:%M')}"
+            " UTC"
+        )
+
+        print(
+            "  Available AC : "
+            f"{result.available_power_kw:.3f} kW"
+        )
+
+        print(
+            "  Dispatched AC: "
+            f"{result.dispatched_power_kw:.3f} kW"
+        )
+
+        print(
+            "  Interval     : "
+            f"{result.interval_energy_kwh:.3f} kWh"
+        )
+
+        print(
+            "  Cumulative   : "
+            f"{result.cumulative_energy_kwh:.3f} kWh"
+        )
+
+        print(
+            "  Active alarms: "
+            f"{result.active_alarms}"
+        )
+
+        print("-" * 62)
+
+    # ========================================================
+    # EXPORT REPORTS
+    # ========================================================
+
+    output_directory = Path(output_directory)
+
+    output_directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    file_15m = (
+        output_directory / "production_15m.csv"
+    )
+
+    file_hourly = (
+        output_directory / "production_hourly.csv"
+    )
+
+    file_alarms = (
+        output_directory / "alarm_history.csv"
+    )
+
+    simulator.export_15m_csv(file_15m)
+
+    simulator.export_hourly_csv(file_hourly)
+
+    with file_alarms.open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as file:
+
+        writer = csv.writer(file)
+
+        writer.writerow((
+            "detected_at_utc",
+            "code",
+            "inverter_id",
+            "transition",
+        ))
+
+        for event in simulator.alarm_history:
+            writer.writerow((
+                event.timestamp_utc.isoformat(),
+                event.code,
+                event.inverter_id or "",
+                event.transition,
+            ))
+
+    print()
+
+    print("SIMULATION COMPLETE")
+
+
+    # Save completed GES simulation to SQLite.
+    historian = SolarHistorian(
+        output_directory / "historian.sqlite3"
+    )
+
+    scenario = (
+        "GRID_LOSS"
+        if grid_loss_interval_index is not None
+        else "NORMAL"
+    )
+
+    run_id = historian.save_simulation(
+        simulator,
+        scenario=scenario,
+        inverter_snapshot_payloads=(
+            build_demo_inverter_snapshot_payloads(
+                pipeline
+            )
+        ),
+    )
+
+    print(f"Historian run ID: {run_id}")
+
+
+    if simulator.records:
+        total_energy = (
+            simulator.records[-1].cumulative_energy_kwh
+        )
+    else:
+        total_energy = 0.0
+
+    print(
+        f"Total simulated energy: "
+        f"{total_energy:.3f} kWh"
+    )
+
+    print(
+        f"Alarm transitions: "
+        f"{len(simulator.alarm_history)}"
+    )
+
+    print(f"Reports: {output_directory.resolve()}")
+
+    print(
+        "NOTICE: No real PLC, SCADA or OT "
+        "equipment was contacted."
+    )
+
+    return simulator
+    # Save the completed simulation to SQLite.
+    historian = SolarHistorian(
+        output_directory / "historian.sqlite3"
+    )
+
+    scenario = (
+        "GRID_LOSS"
+        if grid_loss_interval_index is not None
+        else "NORMAL"
+    )
+
+    run_id = historian.save_simulation(
+        simulator,
+        scenario=scenario,
+    )
+
+    print(f"Historian run ID: {run_id}")
+
+    # Persist simulation results in SQLite.
+    historian = SolarHistorian(
+        output_directory / "historian.sqlite3"
+    )
+
+    scenario = (
+        "GRID_LOSS"
+        if grid_loss_interval_index is not None
+        else "NORMAL"
+    )
+
+    run_id = historian.save_simulation(
+        simulator,
+        scenario=scenario,
+    )
+
+    print(f"Historian run ID: {run_id}")
+# ============================================================
+# COMMAND LINE
+# ============================================================
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(
+        description="Synthetic GES time-series demo"
+    )
+
+    parser.add_argument(
+        "--weather",
+        default="data/solar/demo_weather_15m.csv",
+    )
+
+    parser.add_argument(
+        "--out",
+        default="outputs/ges_normal",
+    )
+
+    parser.add_argument(
+        "--grid-loss-interval",
+        type=int,
+        default=None,
+        help="Zero-based interval index",
+    )
+
+    args = parser.parse_args()
+
+    run_demo(
+        weather_file=args.weather,
+        output_directory=args.out,
+        grid_loss_interval_index=args.grid_loss_interval,
+    )
+
+========== tests/test_solar_advanced_14.py ==========
+
+from pathlib import Path
+from math import isclose
+
+import pytest
+
+from demo_ges_timeseries import (
+    build_demo_pipeline,
+)
+
+from simulator.solar.component_catalog import (
+    load_component_catalog,
+)
+
+from simulator.solar.multi_mppt_physics import (
+    MPPTArray,
+    MPPTLimits,
+    calculate_multi_mppt_dc,
+)
+
+from simulator.solar.oem_model_readiness import (
+    assess_oem_readiness,
+    limits_from_oem_catalog,
+    approximate_oem_panel_temperature,
+    require_real_oem_model,
+)
+
+from simulator.solar.pq_dispatch import (
+    PQCapability,
+)
+
+from simulator.solar.solar_timeseries import (
+    SolarIntervalInput,
+    SolarTimeSeriesSimulator,
+)
+
+from simulator.solar.weather_io import (
+    load_weather_intervals_csv,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+WEATHER = (
+    ROOT / "data/solar/demo_weather_15m.csv"
+)
+
+CATALOG = (
+    ROOT
+    / "data/solar/reference/ges_component_parameters.csv"
+)
+
+
+def demo_weather():
+    return load_weather_intervals_csv(
+        WEATHER
+    )[1]
+
+
+def demo_pq_capabilities():
+    return {
+        "INV_1": PQCapability(
+            nameplate_kva=5.0,
+            rated_active_kw=10.0,
+        ),
+        "INV_2": PQCapability(
+            nameplate_kva=5.0,
+            rated_active_kw=10.0,
+        ),
+    }
+
+
+def test_two_mppts_have_separate_dc_results():
+    pipeline = build_demo_pipeline()
+
+    weather = demo_weather().weather
+
+    result = calculate_multi_mppt_dc(
+        site=pipeline.site,
+        weather=weather,
+        arrays=(
+            MPPTArray(
+                channel=1,
+                array=pipeline.assets[0].array,
+                surface=pipeline.assets[0].surface,
+            ),
+            MPPTArray(
+                channel=2,
+                array=pipeline.assets[1].array,
+                surface=pipeline.assets[1].surface,
+            ),
+        ),
+        limits=MPPTLimits(
+            mppt_count=2,
+            min_v=200,
+            max_v=800,
+            max_dc_v=1000,
+            max_operating_a=30,
+            max_short_circuit_a=40,
+            max_strings=2,
+        ),
+    )
+
+    assert len(result.channels) == 2
+
+    assert result.dc_offered_kw > 0
+
+    assert result.dc_accepted_kw <= (
+        result.dc_offered_kw
+    )
+
+    assert isclose(
+        result.dc_offered_kw,
+        sum(
+            channel.offered_kw
+            for channel in result.channels
+        ),
+        abs_tol=1e-8,
+    )
+
+    assert isclose(
+        result.dc_offered_kw,
+        result.dc_accepted_kw
+        + result.dc_rejected_kw,
+        abs_tol=1e-8,
+    )
+
+
+def test_mppt_current_is_limited_independently():
+    pipeline = build_demo_pipeline()
+    weather = demo_weather().weather
+
+    result = calculate_multi_mppt_dc(
+        site=pipeline.site,
+        weather=weather,
+        arrays=(
+            MPPTArray(
+                channel=1,
+                array=pipeline.assets[0].array,
+                surface=pipeline.assets[0].surface,
+            ),
+        ),
+        limits=MPPTLimits(
+            mppt_count=2,
+            min_v=200,
+            max_v=800,
+            max_dc_v=1000,
+            max_operating_a=1,
+            max_short_circuit_a=40,
+            max_strings=2,
+        ),
+    )
+
+    channel = result.channels[0]
+
+    assert channel.accepted_kw <= (
+        channel.voltage_v / 1000.0
+    ) + 1e-9
+
+    assert channel.rejected_kw > 0
+
+
+def test_duplicate_mppt_channel_rejected():
+    pipeline = build_demo_pipeline()
+    asset = pipeline.assets[0]
+
+    branch = MPPTArray(
+        channel=1,
+        array=asset.array,
+        surface=asset.surface,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Duplicate MPPT",
+    ):
+        calculate_multi_mppt_dc(
+            site=pipeline.site,
+            weather=demo_weather().weather,
+            arrays=(branch, branch),
+            limits=MPPTLimits(
+                2, 200, 800, 1000, 30, 40, 2
+            ),
+        )
+
+
+def test_real_oem_model_reports_missing_parameters():
+    catalog = load_component_catalog(
+        CATALOG
+    )
+
+    panel = catalog["TRINA_TSM445_NEG9R28"]
+    inverter = catalog["SMA_STP50_40"]
+
+    report = assess_oem_readiness(
+        panel,
+        inverter,
+    )
+
+    assert not report.real_physics_ready
+
+    assert "PANEL:a_ref_v" in report.missing
+
+    assert (
+        "INVERTER:eta_nominal_curve_parameter"
+        in report.missing
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Missing OEM",
+    ):
+        require_real_oem_model(
+            panel,
+            inverter,
+        )
+
+
+def test_sungrow_mppt_count_from_catalog():
+    catalog = load_component_catalog(
+        CATALOG
+    )
+
+    limits = limits_from_oem_catalog(
+        catalog["SUNGROW_SG110CX_V152"]
+    )
+
+    assert limits.mppt_count == 9
+    assert limits.max_dc_v == 1100
+    assert limits.max_operating_a == 26
+    assert limits.max_strings == 2
+
+
+def test_temperature_requires_explicit_coefficients():
+    catalog = load_component_catalog(
+        CATALOG
+    )
+
+    panel = catalog["TRINA_TSM445_NEG9R28"]
+
+    with pytest.raises(
+        ValueError,
+        match="Explicit Faiman",
+    ):
+        approximate_oem_panel_temperature(
+            panel,
+            irradiance_w_m2=800,
+            ambient_c=25,
+            wind_m_s=2,
+        )
+
+
+def test_temperature_estimate_is_labeled_approximate():
+    catalog = load_component_catalog(
+        CATALOG
+    )
+
+    panel = catalog["TRINA_TSM445_NEG9R28"]
+
+    result = approximate_oem_panel_temperature(
+        panel,
+        irradiance_w_m2=800,
+        ambient_c=25,
+        wind_m_s=2,
+        u0=25,
+        u1=6.84,
+    )
+
+    assert result.cell_temperature_c > 25
+
+    assert result.approx_stc_power_w > 0
+
+    assert (
+        "APPROXIMATE_STC_GAMMA_MODEL_NOT_DESOTO"
+        in result.warnings
+    )
+
+
+def test_pq_dispatch_reduces_active_power():
+    pipeline = build_demo_pipeline()
+    weather = demo_weather().weather
+
+    baseline = pipeline.simulate(
+        weather
+    )
+
+    constrained = pipeline.simulate(
+        weather,
+        pq_capabilities=demo_pq_capabilities(),
+        reactive_requests_kvar={
+            "INV_1": 4.0,
+            "INV_2": 4.0,
+        },
+    )
+
+    assert constrained.plant.dispatched_power_kw <= 6.0 + 1e-8
+
+    assert constrained.plant.dispatched_power_kw <= (
+        baseline.plant.dispatched_power_kw
+    )
+
+    assert isclose(
+        constrained.plant.dispatched_power_kw,
+        sum(
+            inverter.ac_dispatched_kw
+            for inverter in (
+                constrained.plant.inverter_results
+            )
+        ),
+        abs_tol=1e-8,
+    )
+
+
+def test_zero_q_with_large_capacity_matches_legacy():
+    pipeline = build_demo_pipeline()
+    weather = demo_weather().weather
+
+    baseline = pipeline.simulate(
+        weather
+    )
+
+    result = pipeline.simulate(
+        weather,
+        pq_capabilities={
+            "INV_1": PQCapability(50, 10),
+            "INV_2": PQCapability(50, 10),
+        },
+        reactive_requests_kvar={
+            "INV_1": 0,
+            "INV_2": 0,
+        },
+    )
+
+    assert result.plant.dispatched_power_kw == pytest.approx(
+        baseline.plant.dispatched_power_kw,
+        abs=1e-8,
+    )
+
+
+def test_reactive_request_over_kva_is_rejected():
+    pipeline = build_demo_pipeline()
+
+    with pytest.raises(
+        ValueError,
+        match="Reactive request infeasible",
+    ):
+        pipeline.simulate(
+            demo_weather().weather,
+            pq_capabilities=demo_pq_capabilities(),
+            reactive_requests_kvar={
+                "INV_1": 10.0,
+                "INV_2": 4.0,
+            },
+        )
+
+
+def test_unknown_active_rating_blocks_pq():
+    pipeline = build_demo_pipeline()
+
+    with pytest.raises(
+        ValueError,
+        match="Rated active power unknown",
+    ):
+        pipeline.simulate(
+            demo_weather().weather,
+            pq_capabilities={
+                "INV_1": PQCapability(5, None),
+                "INV_2": PQCapability(5, 10),
+            },
+            reactive_requests_kvar={
+                "INV_1": 0,
+                "INV_2": 0,
+            },
+        )
+
+
+def test_pq_limits_reach_time_series():
+    pipeline = build_demo_pipeline()
+
+    simulator = SolarTimeSeriesSimulator(
+        pipeline
+    )
+
+    weather_row = demo_weather()
+
+    record = simulator.step(
+        SolarIntervalInput(
+            start_utc=weather_row.start_utc,
+            end_utc=weather_row.end_utc,
+            weather=weather_row.weather,
+            pq_capabilities=demo_pq_capabilities(),
+            reactive_requests_kvar={
+                "INV_1": 4,
+                "INV_2": 4,
+            },
+        )
+    )
+
+    assert record.dispatched_power_kw <= 6 + 1e-8
+
+    assert record.dispatched_power_kw <= (
+        record.available_power_kw
+    )
+
+    assert record.interval_energy_kwh == pytest.approx(
+        record.dispatched_power_kw * 0.25
+    )
+
+
+def test_grid_loss_preserved_under_pq():
+    pipeline = build_demo_pipeline()
+    simulator = SolarTimeSeriesSimulator(pipeline)
+
+    weather_row = demo_weather()
+
+    record = simulator.step(
+        SolarIntervalInput(
+            start_utc=weather_row.start_utc,
+            end_utc=weather_row.end_utc,
+            weather=weather_row.weather,
+
+            grid_available=False,
+
+            pq_capabilities=demo_pq_capabilities(),
+
+            reactive_requests_kvar={
+                "INV_1": 4,
+                "INV_2": 4,
+            },
+        )
+    )
+
+    assert record.dispatched_power_kw == 0
+
+    assert "GRID_UNAVAILABLE" in record.active_alarms
+
+
+========== tests/test_solar_historian_inverter_e2e.py ==========
+
+import sqlite3
+
+import pytest
+
+from pathlib import Path
+
+from demo_ges_timeseries import build_demo_pipeline
+
+from simulator.solar.historian import SolarHistorian
+
+from simulator.solar.inverter_snapshot_payloads import (
+    build_demo_inverter_snapshot_payloads,
+)
+
+from simulator.solar.solar_timeseries import (
+    SolarIntervalInput,
+    SolarTimeSeriesSimulator,
+)
+
+from simulator.solar.weather_io import (
+    load_weather_intervals_csv,
+)
+
+
+WEATHER = (
+    Path(__file__).resolve().parents[1]
+    / "data/solar/demo_weather_15m.csv"
+)
+
+
+def make_simulator(grid_loss_index=None):
+
+    pipeline = build_demo_pipeline()
+    simulator = SolarTimeSeriesSimulator(pipeline)
+
+    weather_rows = load_weather_intervals_csv(
+        WEATHER
+    )
+
+    for index, item in enumerate(weather_rows):
+        simulator.step(
+            SolarIntervalInput(
+                start_utc=item.start_utc,
+                end_utc=item.end_utc,
+                weather=item.weather,
+                grid_available=(
+                    index != grid_loss_index
+                ),
+            )
+        )
+
+    return simulator, pipeline
+
+
+def test_snapshot_uses_demo_configuration():
+
+    pipeline = build_demo_pipeline()
+
+    payloads = (
+        build_demo_inverter_snapshot_payloads(
+            pipeline
+        )
+    )
+
+    assert set(payloads) == {"INV_1", "INV_2"}
+
+    for inverter_id, payload in payloads.items():
+
+        assert payload["component_id"] == inverter_id
+
+        assert payload["values"][
+            "inverter.rated_ac_kw"
+        ]["value"] == 10.0
+
+        assert payload["values"][
+            "inverter.nominal_efficiency"
+        ]["value"] == 0.96
+
+        assert payload["values"][
+            "array.modules_per_string"
+        ]["value"] == 10
+
+        assert payload["values"][
+            "array.parallel_strings"
+        ]["value"] == 2
+
+
+def test_normal_run_writes_both_inverters(tmp_path):
+
+    simulator, pipeline = make_simulator()
+
+    path = tmp_path / "normal.sqlite3"
+
+    historian = SolarHistorian(path)
+
+    run_id = historian.save_simulation(
+        simulator,
+        inverter_snapshot_payloads=(
+            build_demo_inverter_snapshot_payloads(
+                pipeline
+            )
+        ),
+    )
+
+    with sqlite3.connect(path) as db:
+
+        count = db.execute(
+            """
+            SELECT COUNT(*)
+            FROM ges_inverter_intervals
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()[0]
+
+        assert count == len(simulator.records) * 2
+
+        comparisons = db.execute(
+            """
+            SELECT
+                p.dispatched_power_kw,
+                SUM(i.ac_dispatched_kw)
+            FROM production_intervals AS p
+            JOIN ges_inverter_intervals AS i
+              ON i.run_id = p.run_id
+             AND i.start_utc = p.start_utc
+            WHERE p.run_id = ?
+            GROUP BY p.start_utc
+            ORDER BY p.start_utc
+            """,
+            (run_id,),
+        ).fetchall()
+
+        assert len(comparisons) == len(
+            simulator.records
+        )
+
+        for plant_power, inverter_sum in comparisons:
+            assert inverter_sum == pytest.approx(
+                plant_power,
+                abs=1e-6,
+            )
+
+        snapshots = db.execute(
+            "SELECT COUNT(*) "
+            "FROM ges_parameter_snapshots"
+        ).fetchone()[0]
+
+        assert snapshots == 2
+
+
+def test_grid_loss_keeps_plant_alarm_scope(tmp_path):
+
+    simulator, pipeline = make_simulator(
+        grid_loss_index=2
+    )
+
+    path = tmp_path / "grid_loss.sqlite3"
+
+    historian = SolarHistorian(path)
+
+    run_id = historian.save_simulation(
+        simulator,
+        scenario="GRID_LOSS",
+        inverter_snapshot_payloads=(
+            build_demo_inverter_snapshot_payloads(
+                pipeline
+            )
+        ),
+    )
+
+    with sqlite3.connect(path) as db:
+
+        # Grid-loss interval is the third record.
+        start = simulator.records[2].start_utc.isoformat()
+
+        inverter_powers = db.execute(
+            """
+            SELECT ac_dispatched_kw
+            FROM ges_inverter_intervals
+            WHERE run_id = ?
+              AND start_utc = ?
+            """,
+            (run_id, start),
+        ).fetchall()
+
+        assert len(inverter_powers) == 2
+        assert all(power[0] == 0 for power in inverter_powers)
+
+        plant_alarm_count = db.execute(
+            """
+            SELECT COUNT(*)
+            FROM alarm_events
+            WHERE run_id = ?
+              AND code = 'GRID_UNAVAILABLE'
+            """,
+            (run_id,),
+        ).fetchone()[0]
+
+        assert plant_alarm_count >= 1
+
+        inverter_alarm_count = db.execute(
+            """
+            SELECT COUNT(*)
+            FROM ges_inverter_alarm_events
+            WHERE run_id = ?
+              AND code = 'GRID_UNAVAILABLE'
+            """,
+            (run_id,),
+        ).fetchone()[0]
+
+        assert inverter_alarm_count == 0
+
+
+def test_legacy_save_remains_supported(tmp_path):
+
+    simulator, _ = make_simulator()
+
+    path = tmp_path / "legacy.sqlite3"
+
+    historian = SolarHistorian(path)
+
+    run_id = historian.save_simulation(
+        simulator
+    )
+
+    with sqlite3.connect(path) as db:
+
+        plant_count = db.execute(
+            "SELECT COUNT(*) "
+            "FROM production_intervals "
+            "WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
+
+        inverter_count = db.execute(
+            "SELECT COUNT(*) "
+            "FROM ges_inverter_intervals "
+            "WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
+
+        assert plant_count == len(simulator.records)
+        assert inverter_count == 0
+
+
+========== tests/test_solar_physics_cache.py ==========
+from pathlib import Path
+from unittest.mock import patch
+
+from demo_ges_timeseries import build_demo_pipeline
+from simulator.solar.weather_io import (
+    load_weather_intervals_csv,
+)
+import simulator.solar.solar_pipeline as solar_pipeline
+
+
+WEATHER = (
+    Path(__file__).resolve().parents[1]
+    / "data/solar/demo_weather_15m.csv"
+)
+
+
+def test_identical_arrays_share_one_physics_calculation():
+    pipeline = build_demo_pipeline()
+    weather = load_weather_intervals_csv(WEATHER)[0].weather
+
+    original_poa = solar_pipeline.calculate_poa
+    original_dc = solar_pipeline.calculate_pv_array_from_poa
+
+    with (
+        patch.object(
+            solar_pipeline,
+            "calculate_poa",
+            wraps=original_poa,
+        ) as poa_spy,
+        patch.object(
+            solar_pipeline,
+            "calculate_pv_array_from_poa",
+            wraps=original_dc,
+        ) as dc_spy,
+    ):
+        result = pipeline.simulate(weather)
+
+    assert len(result.plant.inverter_results) == 2
+    assert poa_spy.call_count == 1
+    assert dc_spy.call_count == 1

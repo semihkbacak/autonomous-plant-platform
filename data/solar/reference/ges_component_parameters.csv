@@ -1,0 +1,77 @@
+﻿component_id,component_type,parameter,value,source_id,page,evidence
+TRINA_TSM445_NEG9R28,panel,manufacturer,Trina Solar,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,model,TSM-445NEG9R.28,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,technology,n-type i-TOPCon dual-glass,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,p_stc_w,445.0,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,v_mp_v,44.3,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,i_mp_a,10.05,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,v_oc_v,52.6,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,i_sc_a,10.71,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,gamma_p_per_C,-0.003,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,beta_voc_per_C,-0.0024,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,alpha_isc_per_C,0.0004,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,noct_C,43.0,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,noct_tolerance_K,2.0,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,max_system_v,1500.0,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,series_fuse_a,20.0,D1,2,datasheet
+TRINA_TSM445_NEG9R28,panel,power_tolerance,0/+5 W,D1,2,datasheet
+JINKO_JKM585N72HL4V,panel,manufacturer,JinkoSolar,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,model,JKM585N-72HL4-V,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,technology,n-type monocrystalline monofacial,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,p_stc_w,585.0,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,v_mp_v,42.52,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,i_mp_a,13.76,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,v_oc_v,51.16,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,i_sc_a,14.55,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,gamma_p_per_C,-0.0029,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,beta_voc_per_C,-0.0025,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,alpha_isc_per_C,0.00045,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,noct_C,45.0,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,noct_tolerance_K,2.0,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,max_system_v,1500.0,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,series_fuse_a,25.0,D2,2,datasheet
+JINKO_JKM585N72HL4V,panel,power_tolerance,0/+3 percent,D2,2,datasheet
+SMA_STP50_40,inverter,manufacturer,SMA,D3,2,datasheet
+SMA_STP50_40,inverter,model,Sunny Tripower CORE1 STP 50-40,D3,2,datasheet
+SMA_STP50_40,inverter,max_generator_stc_w,75000.0,D3,2,datasheet
+SMA_STP50_40,inverter,max_dc_v,1000.0,D3,2,datasheet
+SMA_STP50_40,inverter,min_dc_v,150.0,D3,2,datasheet
+SMA_STP50_40,inverter,start_dc_v,188.0,D3,2,datasheet
+SMA_STP50_40,inverter,mppt_min_v,500.0,D3,2,datasheet
+SMA_STP50_40,inverter,mppt_max_v,800.0,D3,2,datasheet
+SMA_STP50_40,inverter,rated_dc_v,670.0,D3,2,datasheet
+SMA_STP50_40,inverter,mppt_count,6,D3,2,datasheet
+SMA_STP50_40,inverter,strings_per_mppt,2,D3,2,datasheet
+SMA_STP50_40,inverter,max_operating_current_per_mppt_a,20.0,D3,2,datasheet
+SMA_STP50_40,inverter,max_short_circuit_current_per_mppt_a,30.0,D3,2,datasheet
+SMA_STP50_40,inverter,rated_ac_w,50000.0,D3,2,datasheet
+SMA_STP50_40,inverter,max_ac_apparent_va,50000.0,D3,2,datasheet
+SMA_STP50_40,inverter,ac_rating_condition,230 V / 50 Hz,D3,2,datasheet
+SMA_STP50_40,inverter,eta_max_pct,98.1,D3,2,datasheet
+SMA_STP50_40,inverter,eta_european_pct,97.8,D3,2,datasheet
+SMA_STP50_40,inverter,eta_nominal_curve_parameter,,D3,2,not_published_or_not_extracted
+SMA_STP50_40,inverter,night_consumption_w,4.8,D3,2,datasheet
+SMA_STP50_40,inverter,night_consumption_relation,=,D3,2,datasheet
+SMA_STP50_40,inverter,derating_note,Operating ambient -25 to +60 C; no numeric derating curve extracted,D3,2,datasheet
+SUNGROW_SG110CX_V152,inverter,manufacturer,Sungrow,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,model,SG110CX New v1.5.2,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,max_generator_stc_w,,D4,2,not_published_or_not_extracted
+SUNGROW_SG110CX_V152,inverter,max_dc_v,1100.0,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,min_dc_v,200.0,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,start_dc_v,250.0,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,mppt_min_v,200.0,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,mppt_max_v,1000.0,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,rated_dc_v,585.0,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,mppt_count,9,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,strings_per_mppt,2,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,max_operating_current_per_mppt_a,26.0,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,max_short_circuit_current_per_mppt_a,40.0,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,rated_ac_w,,D4,2,not_published_or_not_extracted
+SUNGROW_SG110CX_V152,inverter,max_ac_apparent_va,110000.0,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,ac_rating_condition,110 kVA at 45 C; 100 kVA at 50 C,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,eta_max_pct,98.7,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,eta_european_pct,98.5,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,eta_nominal_curve_parameter,,D4,2,not_published_or_not_extracted
+SUNGROW_SG110CX_V152,inverter,night_consumption_w,2.0,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,night_consumption_relation,<,D4,2,datasheet
+SUNGROW_SG110CX_V152,inverter,derating_note,Ambient >50 C derating; apparent power decreases already from 45 to 50 C,D4,2,datasheet

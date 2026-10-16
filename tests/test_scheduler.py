@@ -113,7 +113,7 @@ def test_recommend_no_start_when_target_is_already_met():
         target_power_mw=10.0,
     )
 
-    assert result is None  
+    assert result is None
 
 def test_recommend_no_start_when_target_is_already_met():
     plant = PlantState(
@@ -138,4 +138,4 @@ def test_recommend_no_start_when_target_is_already_met():
         target_power_mw=10.0,
     )
 
-    assert result is None 
+    assert result is None

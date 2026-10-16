@@ -1,11 +1,11 @@
 # Autonomous Plant Platform
 
-**Vendor-independent autonomous industrial plant operations and decision-support platform.**  
+**Vendor-independent autonomous industrial plant operations and decision-support platform.**
 **Üretici bağımsız, otonom endüstriyel tesis işletim ve karar destek platformu.**
 
 > **Current release / Güncel sürüm:** `v0.2.0 — Hydroelectric Plant Simulator MVP`
 >
-> No real PLC, SCADA, RTU, protection system or field device is connected.  
+> No real PLC, SCADA, RTU, protection system or field device is connected.
 > Gerçek PLC, SCADA, RTU, koruma sistemi veya saha ekipmanı bağlı değildir.
 
 ---

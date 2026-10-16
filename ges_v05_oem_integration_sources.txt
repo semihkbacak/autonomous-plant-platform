@@ -1,0 +1,2438 @@
+
+========== simulator/solar/oem_model_readiness.py ==========
+
+"""
+OEM model readiness and temperature approximation.
+
+Unknown OEM parameters remain unknown.
+No parameter is inferred from a maximum efficiency.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import isfinite
+
+from simulator.solar.component_catalog import (
+    Component,
+)
+
+from simulator.solar.multi_mppt_physics import (
+    MPPTLimits,
+)
+
+
+DESOTO_FIELDS = (
+    "alpha_sc_a_per_c",
+    "a_ref_v",
+    "i_l_ref_a",
+    "i_o_ref_a",
+    "r_sh_ref_ohm",
+    "r_s_ohm",
+)
+
+
+@dataclass(frozen=True)
+class OEMReadiness:
+    panel_id: str
+    inverter_id: str
+
+    missing: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+    @property
+    def real_physics_ready(self) -> bool:
+        return not self.missing
+
+
+def assess_oem_readiness(
+    panel: Component,
+    inverter: Component,
+) -> OEMReadiness:
+
+    if (
+        panel.component_type != "panel"
+        or inverter.component_type != "inverter"
+    ):
+        raise ValueError(
+            "Panel/inverter component types required"
+        )
+
+    required_inverter = (
+        "rated_ac_w",
+        "eta_nominal_curve_parameter",
+    )
+
+    missing = tuple(
+        [
+            f"PANEL:{name}"
+            for name in DESOTO_FIELDS
+            if panel.number(
+                name,
+                required=False,
+            ) is None
+        ]
+        +
+        [
+            f"INVERTER:{name}"
+            for name in required_inverter
+            if inverter.number(
+                name,
+                required=False,
+            ) is None
+        ]
+    )
+
+    return OEMReadiness(
+        panel_id=panel.component_id,
+        inverter_id=inverter.component_id,
+
+        missing=missing,
+
+        warnings=(
+            "MPPT_CURVE_AND_TEMPERATURE_DERATING_REQUIRE_OEM_VALIDATION",
+            "OEM_DATASHEET_VALUES_NOT_CALIBRATED_IV_MODEL",
+        ),
+    )
+
+
+def require_real_oem_model(
+    panel: Component,
+    inverter: Component,
+) -> None:
+
+    report = assess_oem_readiness(
+        panel,
+        inverter,
+    )
+
+    if not report.real_physics_ready:
+        raise ValueError(
+            "Missing OEM model coefficients: "
+            + ", ".join(report.missing)
+        )
+
+
+def limits_from_oem_catalog(
+    inverter: Component,
+) -> MPPTLimits:
+    """
+    Read known per-MPPT electrical limits
+    without claiming a calibrated inverter model.
+    """
+
+    if inverter.component_type != "inverter":
+        raise ValueError(
+            "Expected inverter"
+        )
+
+    mppt_count = inverter.number(
+        "mppt_count"
+    )
+
+    string_count = inverter.number(
+        "strings_per_mppt"
+    )
+
+    if (
+        mppt_count != int(mppt_count)
+        or string_count != int(string_count)
+    ):
+        raise ValueError(
+            "Invalid integer MPPT count"
+        )
+
+    return MPPTLimits(
+        mppt_count=int(mppt_count),
+
+        min_v=inverter.number("mppt_min_v"),
+        max_v=inverter.number("mppt_max_v"),
+        max_dc_v=inverter.number("max_dc_v"),
+
+        max_operating_a=inverter.number(
+            "max_operating_current_per_mppt_a"
+        ),
+
+        max_short_circuit_a=inverter.number(
+            "max_short_circuit_current_per_mppt_a"
+        ),
+
+        max_strings=int(string_count),
+    )
+
+
+@dataclass(frozen=True)
+class TemperatureEstimate:
+    cell_temperature_c: float
+
+    approx_stc_power_w: float
+
+    warnings: tuple[str, ...]
+
+
+def approximate_oem_panel_temperature(
+    panel: Component,
+    *,
+    irradiance_w_m2: float,
+    ambient_c: float,
+    wind_m_s: float,
+    u0: float | None = None,
+    u1: float | None = None,
+) -> TemperatureEstimate:
+    """
+    Faiman-style cell temperature estimate
+    and first-order STC-gamma power scaling.
+
+    This does NOT replace De Soto.
+    It does NOT compute an OEM inverter AC curve.
+
+    u0/u1 must be explicitly supplied.
+    """
+
+    values = (
+        irradiance_w_m2,
+        ambient_c,
+        wind_m_s,
+    )
+
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not isfinite(value)
+        for value in values
+    ):
+        raise ValueError(
+            "Invalid weather input"
+        )
+
+    if (
+        irradiance_w_m2 < 0
+        or wind_m_s < 0
+        or ambient_c <= -273.15
+    ):
+        raise ValueError(
+            "Invalid weather range"
+        )
+
+    if u0 is None or u1 is None:
+        raise ValueError(
+            "Explicit Faiman coefficients required; "
+            "OEM coefficients not available"
+        )
+
+    if (
+        not all(isfinite(x) for x in (u0, u1))
+        or u0 <= 0
+        or u1 < 0
+    ):
+        raise ValueError(
+            "Invalid Faiman coefficients"
+        )
+
+    # Simplified empirical temperature approximation.
+    cell_temperature = (
+        ambient_c
+        + irradiance_w_m2
+        / (u0 + u1 * wind_m_s)
+    )
+
+    gamma = panel.number(
+        "gamma_p_per_C"
+    )
+
+    p_stc = panel.number(
+        "p_stc_w"
+    )
+
+    if p_stc <= 0 or gamma >= 0:
+        raise ValueError(
+            "Invalid panel STC/gamma"
+        )
+
+    # Linear irradiance and power-temperature scaling.
+    # Only a screening approximation.
+    power_w = max(
+        0.0,
+        p_stc
+        * irradiance_w_m2 / 1000.0
+        * (
+            1
+            + gamma * (cell_temperature - 25)
+        ),
+    )
+
+    return TemperatureEstimate(
+        cell_temperature_c=cell_temperature,
+
+        approx_stc_power_w=power_w,
+
+        warnings=(
+            "APPROXIMATE_STC_GAMMA_MODEL_NOT_DESOTO",
+            "FAIMAN_COEFFICIENTS_REQUIRE_SITE_CALIBRATION",
+            "DO_NOT_USE_AS_OEM_INVERTER_AC_POWER",
+        ),
+    )
+
+========== simulator/solar/mppt_history.py ==========
+
+"""Atomic MPPT and P-Q Historian extension."""
+from __future__ import annotations
+
+import json
+import sqlite3
+
+from math import fsum, isclose, isfinite
+
+
+def initialize_mppt_schema(
+    db: sqlite3.Connection,
+) -> None:
+    """
+    Call inside the SolarHistorian schema transaction.
+    Does not commit.
+    """
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ges_mppt_intervals (
+            run_id INTEGER NOT NULL,
+            start_utc TEXT NOT NULL,
+            inverter_id TEXT NOT NULL,
+
+            channel INTEGER NOT NULL
+                CHECK(channel > 0),
+
+            end_utc TEXT NOT NULL,
+
+            vmp_v REAL NOT NULL
+                CHECK(vmp_v >= 0),
+
+            imp_a REAL NOT NULL
+                CHECK(imp_a >= 0),
+
+            voc_v REAL NOT NULL
+                CHECK(voc_v >= 0),
+
+            isc_a REAL NOT NULL
+                CHECK(isc_a >= 0),
+
+            dc_offered_kw REAL NOT NULL
+                CHECK(dc_offered_kw >= 0),
+
+            dc_accepted_kw REAL NOT NULL
+                CHECK(dc_accepted_kw >= 0),
+
+            dc_rejected_kw REAL NOT NULL
+                CHECK(dc_rejected_kw >= 0),
+
+            reasons_json TEXT NOT NULL,
+            warnings_json TEXT NOT NULL,
+
+            PRIMARY KEY (
+                run_id,
+                start_utc,
+                inverter_id,
+                channel
+            ),
+
+            FOREIGN KEY(run_id, start_utc)
+                REFERENCES production_intervals(
+                    run_id,
+                    start_utc
+                )
+                ON DELETE CASCADE
+        )
+    """)
+
+    db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ges_mppt_run_inverter
+        ON ges_mppt_intervals(
+            run_id,
+            inverter_id,
+            start_utc
+        )
+    """)
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ges_pq_intervals (
+            run_id INTEGER NOT NULL,
+            start_utc TEXT NOT NULL,
+            inverter_id TEXT NOT NULL,
+            end_utc TEXT NOT NULL,
+
+            requested_reactive_kvar REAL NOT NULL,
+
+            applied_kva_limit REAL NOT NULL
+                CHECK(applied_kva_limit > 0),
+
+            active_limit_kw REAL NOT NULL
+                CHECK(active_limit_kw >= 0),
+
+            warnings_json TEXT NOT NULL,
+
+            PRIMARY KEY (
+                run_id,
+                start_utc,
+                inverter_id
+            ),
+
+            FOREIGN KEY(run_id, start_utc)
+                REFERENCES production_intervals(
+                    run_id,
+                    start_utc
+                )
+                ON DELETE CASCADE
+        )
+    """)
+
+
+def append_mppt_interval(
+    db: sqlite3.Connection,
+    run_id: int,
+    record,
+) -> None:
+    """
+    Append MPPT/P-Q rows in the parent transaction.
+
+    Never commits independently.
+    A failed validation or INSERT rolls back the run.
+    """
+
+    reports = tuple(
+        getattr(record, "mppt_reports", ())
+    )
+
+    if not reports:
+        return
+
+    if not db.in_transaction:
+        raise ValueError(
+            "MPPT rows require parent transaction"
+        )
+
+    inverter_map = {
+        result.inverter_id: result
+        for result in record.inverter_results
+    }
+
+    if len(inverter_map) != len(record.inverter_results):
+        raise ValueError(
+            "Duplicate inverter in parent interval"
+        )
+
+    seen_inverters = set()
+
+    for report in reports:
+
+        iid = report.inverter_id
+
+        if (
+            iid not in inverter_map
+            or iid in seen_inverters
+        ):
+            raise ValueError(
+                "Unknown or duplicate MPPT inverter"
+            )
+
+        seen_inverters.add(iid)
+
+        mppt = report.dc
+
+        if not mppt.channels:
+            raise ValueError(
+                "Empty MPPT channels"
+            )
+
+        expected = inverter_map[iid]
+
+        if not isclose(
+            mppt.dc_offered_kw,
+            expected.dc_offered_kw,
+            rel_tol=0,
+            abs_tol=1e-5,
+        ):
+            raise ValueError(
+                "MPPT/inverter offered DC mismatch"
+            )
+
+        if (
+            expected.status != "BLOCKED"
+            and not isclose(
+                mppt.dc_accepted_kw,
+                expected.dc_accepted_kw,
+                rel_tol=0,
+                abs_tol=1e-5,
+            )
+        ):
+            raise ValueError(
+                "MPPT/inverter accepted DC mismatch"
+            )
+
+        channels_seen = set()
+
+        for channel in mppt.channels:
+
+            if channel.channel in channels_seen:
+                raise ValueError(
+                    "Duplicate channel in MPPT history"
+                )
+
+            channels_seen.add(
+                channel.channel
+            )
+
+            numbers = (
+                channel.voltage_v,
+                channel.current_a,
+                channel.open_circuit_v,
+                channel.short_circuit_a,
+                channel.offered_kw,
+                channel.accepted_kw,
+                channel.rejected_kw,
+            )
+
+            if any(
+                not isfinite(value) or value < 0
+                for value in numbers
+            ):
+                raise ValueError(
+                    "Invalid MPPT electrical values"
+                )
+
+            if not isclose(
+                channel.offered_kw,
+                channel.accepted_kw + channel.rejected_kw,
+                rel_tol=0,
+                abs_tol=1e-5,
+            ):
+                raise ValueError(
+                    "MPPT DC balance mismatch"
+                )
+
+            db.execute("""
+                INSERT INTO ges_mppt_intervals (
+                    run_id,
+                    start_utc,
+                    inverter_id,
+                    channel,
+                    end_utc,
+                    vmp_v,
+                    imp_a,
+                    voc_v,
+                    isc_a,
+                    dc_offered_kw,
+                    dc_accepted_kw,
+                    dc_rejected_kw,
+                    reasons_json,
+                    warnings_json
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?
+                )
+            """, (
+                run_id,
+                record.start_utc.isoformat(),
+                iid,
+                channel.channel,
+                record.end_utc.isoformat(),
+                channel.voltage_v,
+                channel.current_a,
+                channel.open_circuit_v,
+                channel.short_circuit_a,
+                channel.offered_kw,
+                channel.accepted_kw,
+                channel.rejected_kw,
+                json.dumps(channel.reasons),
+                json.dumps(mppt.warnings),
+            ))
+
+        if not isclose(
+            fsum(
+                channel.offered_kw
+                for channel in mppt.channels
+            ),
+            mppt.dc_offered_kw,
+            rel_tol=0,
+            abs_tol=1e-5,
+        ):
+            raise ValueError(
+                "MPPT total offered mismatch"
+            )
+
+        if not isclose(
+            fsum(
+                channel.accepted_kw
+                for channel in mppt.channels
+            ),
+            mppt.dc_accepted_kw,
+            rel_tol=0,
+            abs_tol=1e-5,
+        ):
+            raise ValueError(
+                "MPPT total accepted mismatch"
+            )
+
+    # --------------------------------------------------------
+    # P-Q SCREENING HISTORY
+    # --------------------------------------------------------
+
+    # These are requested reactive power and
+    # capability-screening values.
+    # They are NOT measured or physically delivered Q.
+
+    pq_seen = set()
+
+    for pq in tuple(
+        getattr(record, "pq_reports", ())
+    ):
+
+        if (
+            pq.inverter_id not in inverter_map
+            or pq.inverter_id in pq_seen
+        ):
+            raise ValueError(
+                "Unknown or duplicate P-Q inverter"
+            )
+
+        pq_seen.add(
+            pq.inverter_id
+        )
+
+        pq_numbers = (
+            pq.requested_reactive_kvar,
+            pq.applied_kva_limit,
+            pq.active_limit_kw,
+        )
+
+        if (
+            any(not isfinite(value) for value in pq_numbers)
+            or pq.applied_kva_limit <= 0
+            or pq.active_limit_kw < 0
+        ):
+            raise ValueError(
+                "Invalid P-Q screening numbers"
+            )
+
+        if (
+            pq.active_limit_kw
+            > inverter_map[
+                pq.inverter_id
+            ].ac_available_kw + 1e-5
+        ):
+            raise ValueError(
+                "P-Q cap exceeds inverter available power"
+            )
+
+        db.execute("""
+            INSERT INTO ges_pq_intervals (
+                run_id,
+                start_utc,
+                inverter_id,
+                end_utc,
+                requested_reactive_kvar,
+                applied_kva_limit,
+                active_limit_kw,
+                warnings_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            run_id,
+            record.start_utc.isoformat(),
+            pq.inverter_id,
+            record.end_utc.isoformat(),
+            pq.requested_reactive_kvar,
+            pq.applied_kva_limit,
+            pq.active_limit_kw,
+            json.dumps(pq.warnings),
+        ))
+
+========== simulator/solar/ges_integrated.py ==========
+
+"""GES v0.4: independent MPPT DC inputs -> one AC inverter -> P/Q dispatch.
+
+Synthetic, simulation-only. Distinct MPPT voltages are NEVER summed or
+represented as a fictitious single DC voltage.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from math import fsum, isfinite
+from typing import Mapping, Sequence
+
+from pvlib.inverter import pvwatts
+
+from simulator.solar.ac_power_limits import ACOperatingRequest, evaluate_ac_power
+from simulator.solar.inverter import InverterConfig, InverterResult
+from simulator.solar.multi_mppt_physics import (
+    MPPTArray, MPPTLimits, MultiMPPTResult, calculate_multi_mppt_dc,
+)
+from simulator.solar.pq_dispatch import PQCapability
+from simulator.solar.solar_pipeline import (
+    SolarArrayReport, SolarAsset, SolarPhysicsPipeline,
+    SolarPipelineReport, SolarWeather,
+)
+from simulator.solar.solar_plant import SolarPlantReport
+from simulator.solar.solar_resource import SolarSite
+
+
+@dataclass(frozen=True)
+class InverterMPPTConfig:
+    channels: tuple[MPPTArray, ...]
+    limits: MPPTLimits
+
+
+@dataclass(frozen=True)
+class InverterMPPTReport:
+    inverter_id: str
+    dc: MultiMPPTResult
+
+
+@dataclass(frozen=True)
+class InverterPQScreen:
+    inverter_id: str
+    requested_reactive_kvar: float
+    applied_kva_limit: float
+    active_limit_kw: float
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class IntegratedSolarReport(SolarPipelineReport):
+    mppt_reports: tuple[InverterMPPTReport, ...] = ()
+    pq_reports: tuple[InverterPQScreen, ...] = ()
+
+
+def _power(name: str, value: float) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(f"Invalid {name}")
+    return float(value)
+
+
+def _baseline_inverter(
+    config: InverterConfig,
+    mppt: MultiMPPTResult,
+    *,
+    grid_available: bool,
+    emergency_stop: bool,
+    fault_active: bool,
+    maintenance_lock: bool,
+) -> InverterResult:
+    """
+    Convert the sum of accepted MPPT DC powers once,
+    without constructing a fictitious DC voltage.
+    """
+    offered = mppt.dc_offered_kw
+    accepted = mppt.dc_accepted_kw
+
+    reasons = [
+        f"MPPT_{ch.channel}:{reason}"
+        for ch in mppt.channels
+        for reason in ch.reasons
+    ]
+
+    blockers = []
+
+    if not grid_available:
+        blockers.append("GRID_UNAVAILABLE")
+
+    if emergency_stop:
+        blockers.append("PLANT_EMERGENCY_STOP")
+
+    if fault_active:
+        blockers.append("INVERTER_FAULT")
+
+    if maintenance_lock:
+        blockers.append("MAINTENANCE_LOCK")
+
+    if blockers:
+        return InverterResult(
+            config.inverter_id, "BLOCKED", offered, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            tuple(dict.fromkeys((*reasons, *blockers))),
+        )
+
+    if accepted <= 0.0:
+        return InverterResult(
+            config.inverter_id, "IDLE", offered, 0.0,
+            0.0, 0.0, 0.0, offered, 0.0, 0.0, 0.0,
+            tuple(dict.fromkeys((*reasons, "NO_ACCEPTED_DC_POWER"))),
+        )
+
+    # Exactly one DC -> AC conversion per inverter.
+    pdc0_kw = config.rated_ac_kw / config.nominal_efficiency
+
+    available = max(
+        0.0,
+        float(
+            pvwatts(
+                pdc=accepted,
+                pdc0=pdc0_kw,
+                eta_inv_nom=config.nominal_efficiency,
+            )
+        ),
+    )
+
+    zeta = accepted / pdc0_kw
+
+    eta = (config.nominal_efficiency / 0.9637) * (
+        -0.0162 * zeta
+        - 0.0059 / zeta
+        + 0.9858
+    )
+
+    unclipped = min(
+        accepted,
+        max(0.0, accepted * eta),
+    )
+
+    available = min(available, unclipped)
+
+    rejected = max(0.0, offered - accepted)
+    clipping = max(0.0, unclipped - available)
+
+    if rejected > 1e-9:
+        reasons.append("MPPT_DC_REJECTED")
+
+    if clipping > 1e-9:
+        reasons.append("AC_CLIPPING")
+
+    return InverterResult(
+        config.inverter_id,
+        "RUNNING" if available > 0 else "CURTAILED",
+        offered,
+        accepted,
+        unclipped,
+        available,
+        available,
+        rejected,
+        max(0.0, accepted - unclipped),
+        clipping,
+        0.0,
+        tuple(dict.fromkeys(reasons)),
+    )
+
+
+class IntegratedSolarPhysicsPipeline(SolarPhysicsPipeline):
+    """
+    Opt-in GES v0.4 simulation path.
+
+    Existing SolarPhysicsPipeline remains available
+    for legacy tests and scenarios.
+    """
+
+    def __init__(
+        self,
+        site: SolarSite,
+        assets: Sequence[SolarAsset],
+        mppt_configs: Mapping[str, InverterMPPTConfig],
+    ) -> None:
+        super().__init__(site, assets)
+
+        if set(mppt_configs) != self.inverter_ids:
+            raise ValueError(
+                "MPPT configuration must cover every inverter"
+            )
+
+        self.mppt_configs = dict(mppt_configs)
+
+        for asset in self.assets:
+            inverter = asset.inverter
+            entry = self.mppt_configs[inverter.inverter_id]
+
+            if not entry.channels:
+                raise ValueError(
+                    "Every inverter needs MPPT channels"
+                )
+
+            if (
+                entry.limits.min_v < inverter.mppt_min_v
+                or entry.limits.max_v > inverter.mppt_max_v
+                or entry.limits.max_dc_v > inverter.max_dc_voltage_v
+            ):
+                raise ValueError(
+                    "MPPT limits exceed inverter envelope"
+                )
+
+    def simulate(
+        self,
+        weather: SolarWeather,
+        requested_target_kw: float | None = None,
+        *,
+        grid_available: bool = True,
+        emergency_stop: bool = False,
+        fault_inverter_ids: frozenset[str] = frozenset(),
+        maintenance_inverter_ids: frozenset[str] = frozenset(),
+        pq_capabilities: Mapping[str, PQCapability] | None = None,
+        reactive_requests_kvar: Mapping[str, float] | None = None,
+    ) -> IntegratedSolarReport:
+
+        _power("wind speed", weather.wind_speed_m_s)
+
+        if (
+            not isfinite(weather.ambient_temperature_c)
+            or weather.ambient_temperature_c <= -273.15
+        ):
+            raise ValueError(
+                "Invalid ambient temperature"
+            )
+
+        unknown_ids = (
+            set(fault_inverter_ids)
+            | set(maintenance_inverter_ids)
+        ) - self.inverter_ids
+
+        if unknown_ids:
+            raise ValueError(
+                "Unknown inverter ID"
+            )
+
+        if (
+            (pq_capabilities is None)
+            != (reactive_requests_kvar is None)
+        ):
+            raise ValueError(
+                "Both P-Q mapping and Q requests required"
+            )
+
+        if pq_capabilities is not None:
+            if (
+                set(pq_capabilities) != self.inverter_ids
+                or set(reactive_requests_kvar)
+                != self.inverter_ids
+            ):
+                raise ValueError(
+                    "P-Q mapping must cover every inverter"
+                )
+
+        if requested_target_kw is not None:
+            _power("requested target", requested_target_kw)
+
+        reports: list[InverterMPPTReport] = []
+        arrays: list[SolarArrayReport] = []
+        baseline: list[InverterResult] = []
+
+        pq_caps = {}
+        pq_screens: list[InverterPQScreen] = []
+        pq_limited = False
+
+        # ----------------------------------------------------
+        # PER-INVERTER MPPT CALCULATION AND AC CONVERSION
+        # ----------------------------------------------------
+
+        for asset in self.assets:
+
+            config = asset.inverter
+            iid = config.inverter_id
+
+            mppt_config = self.mppt_configs[iid]
+
+            mppt = calculate_multi_mppt_dc(
+                self.site,
+                weather,
+                mppt_config.channels,
+                mppt_config.limits,
+            )
+
+            reports.append(
+                InverterMPPTReport(iid, mppt)
+            )
+
+            # Reuse actual POA and De Soto results
+            # calculated for each MPPT channel.
+            for config_channel, measured in zip(
+                mppt_config.channels,
+                mppt.channels,
+            ):
+                if (
+                    config_channel.channel != measured.channel
+                    or measured.poa is None
+                    or measured.dc is None
+                ):
+                    raise ValueError(
+                        "MPPT physics metadata missing or out of order"
+                    )
+
+                arrays.append(
+                    SolarArrayReport(
+                        iid,
+                        measured.poa,
+                        measured.dc,
+                    )
+                )
+
+            actual = _baseline_inverter(
+                config,
+                mppt,
+                grid_available=grid_available,
+                emergency_stop=emergency_stop,
+                fault_active=iid in fault_inverter_ids,
+                maintenance_lock=iid in maintenance_inverter_ids,
+            )
+
+            baseline.append(actual)
+            cap = actual.ac_available_kw
+
+            # ------------------------------------------------
+            # P-Q ACTIVE POWER CAPABILITY SCREEN
+            # ------------------------------------------------
+
+            if pq_capabilities is not None:
+
+                capability = pq_capabilities[iid]
+
+                if not isinstance(
+                    capability,
+                    PQCapability,
+                ):
+                    raise ValueError(
+                        "Expected PQCapability"
+                    )
+
+                if capability.rated_active_kw is None:
+                    raise ValueError(
+                        f"Rated active power unknown: {iid}"
+                    )
+
+                _power(
+                    "rated active power",
+                    capability.rated_active_kw,
+                )
+
+                if capability.rated_active_kw <= 0:
+                    raise ValueError(
+                        "Rated active power must be positive"
+                    )
+
+                q = reactive_requests_kvar[iid]
+
+                screen = evaluate_ac_power(
+                    ACOperatingRequest(
+                        nameplate_kva=capability.nameplate_kva,
+                        requested_active_kw=cap,
+                        requested_reactive_kvar=q,
+                        temperature_limit_kva=(
+                            capability.temperature_limit_kva
+                        ),
+                        temperature_limit_source=(
+                            capability.temperature_limit_source
+                        ),
+                    )
+                )
+
+                if screen.max_active_kw is None:
+                    raise ValueError(
+                        f"Reactive request infeasible: {iid}"
+                    )
+
+                cap = min(
+                    cap,
+                    screen.max_active_kw,
+                    capability.rated_active_kw,
+                )
+
+                pq_screens.append(
+                    InverterPQScreen(
+                        iid,
+                        float(q),
+                        screen.applied_kva_limit,
+                        cap,
+                        tuple((
+                            *screen.warnings,
+                            "Q_REQUEST_NOT_MEASURED_OUTPUT",
+                        )),
+                    )
+                )
+
+                if cap < actual.ac_available_kw - 1e-9:
+                    pq_limited = True
+
+            pq_caps[iid] = cap
+
+        # ----------------------------------------------------
+        # PLANT-WIDE ACTIVE POWER DISTRIBUTION
+        # ----------------------------------------------------
+
+        total_cap = fsum(pq_caps.values())
+
+        total_baseline = fsum(
+            r.ac_available_kw
+            for r in baseline
+        )
+
+        target = (
+            total_cap
+            if requested_target_kw is None
+            else min(
+                total_cap,
+                requested_target_kw,
+            )
+        )
+
+        dispatched: list[InverterResult] = []
+
+        for item in baseline:
+
+            cap = pq_caps[item.inverter_id]
+
+            power = (
+                target * (cap / total_cap)
+                if total_cap > 0
+                else 0.0
+            )
+
+            if item.status in ("BLOCKED", "IDLE"):
+                dispatched.append(item)
+                continue
+
+            reasons = list(item.reasons)
+
+            if power < item.ac_available_kw - 1e-9:
+                reasons.append(
+                    "ACTIVE_POWER_LIMIT"
+                )
+
+            dispatched.append(
+                replace(
+                    item,
+                    status=(
+                        "RUNNING"
+                        if power > 0
+                        else "CURTAILED"
+                    ),
+                    ac_dispatched_kw=power,
+                    curtailment_kw=max(
+                        0.0,
+                        item.ac_available_kw - power,
+                    ),
+                    reasons=tuple(
+                        dict.fromkeys(reasons)
+                    ),
+                )
+            )
+
+        # ----------------------------------------------------
+        # REBUILD FINAL PLANT REPORT
+        # ----------------------------------------------------
+
+        delivered = fsum(
+            item.ac_dispatched_kw
+            for item in dispatched
+        )
+
+        curtailed = fsum(
+            item.curtailment_kw
+            for item in dispatched
+        )
+
+        unserved = (
+            0.0
+            if requested_target_kw is None
+            else max(
+                0.0,
+                requested_target_kw - delivered,
+            )
+        )
+
+        reasons = []
+
+        if emergency_stop:
+            reasons.append(
+                "PLANT_EMERGENCY_STOP"
+            )
+
+        if not grid_available:
+            reasons.append(
+                "GRID_UNAVAILABLE"
+            )
+
+        if total_baseline <= 0:
+            reasons.append(
+                "NO_AC_POWER_AVAILABLE"
+            )
+
+        if pq_limited:
+            reasons.append(
+                "PQ_ACTIVE_POWER_CAP_APPLIED"
+            )
+
+        if curtailed > 1e-9:
+            reasons.append(
+                "CURTAILMENT_APPLIED"
+            )
+
+        if unserved > 1e-7:
+            reasons.append(
+                "INSUFFICIENT_AVAILABLE_POWER"
+            )
+
+        plant = SolarPlantReport(
+            requested_target_kw=requested_target_kw,
+            available_power_kw=total_baseline,
+            dispatched_power_kw=delivered,
+            curtailed_power_kw=curtailed,
+            unserved_target_kw=unserved,
+            grid_available=grid_available,
+            emergency_stop=emergency_stop,
+            inverter_results=tuple(dispatched),
+            reasons=tuple(reasons),
+        )
+
+        return IntegratedSolarReport(
+            timestamp_utc=weather.irradiance.timestamp,
+            array_reports=tuple(arrays),
+            plant=plant,
+            mppt_reports=tuple(reports),
+            pq_reports=tuple(pq_screens),
+        )
+
+========== simulator/solar/inverter_history_writer.py ==========
+
+"""
+GES Step 11.3 - Transactional inverter history writer.
+
+This module:
+- validates inverter electrical results
+- checks parent plant totals
+- stores inverter interval records
+- records alarm transitions
+- preserves parameter provenance
+
+It never commits the caller's transaction.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import sqlite3
+
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+
+
+TOL = 1e-6
+
+POWER_COLUMNS = (
+    "dc_offered_kw",
+    "dc_accepted_kw",
+    "dc_rejected_kw",
+    "ac_unclipped_kw",
+    "ac_available_kw",
+    "ac_dispatched_kw",
+    "conversion_loss_kw",
+    "clipping_loss_kw",
+    "curtailment_kw",
+    "interval_energy_kwh",
+)
+
+
+# ============================================================
+# DATA STRUCTURES
+# ============================================================
+
+@dataclass(frozen=True)
+class InverterHistoryRow:
+    run_id: int
+    inverter_id: str
+
+    start_utc: datetime
+    end_utc: datetime
+
+    dc_voltage_v: float | None
+
+    dc_offered_kw: float
+    dc_accepted_kw: float
+    dc_rejected_kw: float
+
+    ac_unclipped_kw: float
+    ac_available_kw: float
+    ac_dispatched_kw: float
+
+    conversion_loss_kw: float
+    clipping_loss_kw: float
+    curtailment_kw: float
+
+    interval_energy_kwh: float
+
+    status: str
+
+    active_alarms: tuple[str, ...]
+    reasons: tuple[str, ...]
+
+    quality_flags: tuple[str, ...]
+    source_types: tuple[str, ...]
+
+    parameter_snapshot_id: str
+    power_time_semantics: str
+
+    source_timestamp_utc: datetime | None = None
+    received_at_utc: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PlantTotals:
+    run_id: int
+
+    start_utc: datetime
+    end_utc: datetime
+
+    available_power_kw: float
+    dispatched_power_kw: float
+    interval_energy_kwh: float
+
+
+# ============================================================
+# VALIDATION HELPERS
+# ============================================================
+
+def utc_db(value: datetime) -> str:
+    """
+    Match existing APP timestamp format:
+
+    2026-06-21T10:00:00+00:00
+
+    Do not replace +00:00 with Z.
+    """
+
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+    ):
+        raise ValueError(
+            "Timezone-aware UTC timestamp required"
+        )
+
+    if value.utcoffset() != timedelta(0):
+        raise ValueError(
+            "Timestamp must have UTC offset"
+        )
+
+    precision = (
+        "microseconds"
+        if value.microsecond
+        else "seconds"
+    )
+
+    return value.astimezone(
+        timezone.utc
+    ).isoformat(timespec=precision)
+
+
+def check_number(
+    label: str,
+    value: float,
+) -> None:
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(
+            f"{label} must be nonnegative and finite"
+        )
+
+
+def approx(
+    label: str,
+    left: float,
+    right: float,
+    tol: float = TOL,
+) -> None:
+
+    if not math.isclose(
+        left,
+        right,
+        rel_tol=0,
+        abs_tol=tol,
+    ):
+        raise ValueError(
+            f"{label}: {left} != {right}"
+        )
+
+
+def check_time(
+    start: datetime,
+    end: datetime,
+) -> None:
+
+    utc_db(start)
+    utc_db(end)
+
+    if end - start != timedelta(minutes=15):
+        raise ValueError(
+            "Interval must be exactly 15 minutes"
+        )
+
+    if (
+        start.minute % 15
+        or start.second
+        or start.microsecond
+    ):
+        raise ValueError(
+            "Interval must start on UTC quarter-hour"
+        )
+
+
+# ============================================================
+# INVERTER RECORD VALIDATION
+# ============================================================
+
+def check_row(
+    row: InverterHistoryRow,
+) -> None:
+
+    if (
+        type(row.run_id) is not int
+        or row.run_id <= 0
+    ):
+        raise ValueError("Invalid run ID")
+
+    if (
+        not isinstance(row.inverter_id, str)
+        or not row.inverter_id.strip()
+    ):
+        raise ValueError("Missing inverter ID")
+
+    if (
+        not isinstance(
+            row.parameter_snapshot_id,
+            str,
+        )
+        or not row.parameter_snapshot_id.strip()
+    ):
+        raise ValueError(
+            "Missing parameter snapshot ID"
+        )
+
+    check_time(
+        row.start_utc,
+        row.end_utc,
+    )
+
+    # Reject unknown, negative and non-finite power.
+
+    for field in POWER_COLUMNS:
+        check_number(
+            field,
+            getattr(row, field),
+        )
+
+    if row.dc_voltage_v is not None:
+        check_number(
+            "dc_voltage_v",
+            row.dc_voltage_v,
+        )
+
+    # Explicit inverter statuses.
+
+    if row.status not in {
+        "RUNNING",
+        "CURTAILED",
+        "IDLE",
+        "BLOCKED",
+    }:
+        raise ValueError(
+            "Unknown inverter status"
+        )
+
+    # Quality and source metadata.
+
+    for field in (
+        "active_alarms",
+        "reasons",
+        "quality_flags",
+        "source_types",
+    ):
+
+        items = getattr(row, field)
+
+        if (
+            not isinstance(items, tuple)
+            or any(
+                not isinstance(item, str)
+                or not item.strip()
+                for item in items
+            )
+            or len(items) != len(set(items))
+        ):
+            raise ValueError(
+                f"Invalid {field}"
+            )
+
+    if (
+        not row.quality_flags
+        or not row.source_types
+    ):
+        raise ValueError(
+            "Missing quality/source tags"
+        )
+
+    if row.power_time_semantics not in {
+        "interval_mean",
+        "snapshot_constant_assumption",
+    }:
+        raise ValueError(
+            "Unknown power time semantics"
+        )
+
+    if (
+        row.power_time_semantics
+        == "snapshot_constant_assumption"
+        and "estimated" not in row.quality_flags
+    ):
+        raise ValueError(
+            "Snapshot-based power must be "
+            "flagged estimated"
+        )
+
+    for time_value in (
+        row.source_timestamp_utc,
+        row.received_at_utc,
+    ):
+        if time_value is not None:
+            utc_db(time_value)
+
+    # Electrical constraints.
+
+    if (
+        row.dc_accepted_kw
+        > row.dc_offered_kw + TOL
+    ):
+        raise ValueError(
+            "Accepted DC exceeds offered DC"
+        )
+
+    if (
+        row.ac_dispatched_kw
+        > row.ac_available_kw + TOL
+    ):
+        raise ValueError(
+            "Dispatched AC exceeds available AC"
+        )
+
+    approx(
+        "curtailment",
+        row.ac_available_kw - row.ac_dispatched_kw,
+        row.curtailment_kw,
+    )
+
+    approx(
+        "interval energy",
+        row.ac_dispatched_kw * 0.25,
+        row.interval_energy_kwh,
+        TOL * 0.25,
+    )
+
+    if row.status == "BLOCKED":
+
+        approx(
+            "blocked dispatched power",
+            row.ac_dispatched_kw,
+            0.0,
+        )
+
+        if (
+            not row.active_alarms
+            and not row.reasons
+        ):
+            raise ValueError(
+                "BLOCKED requires a reason or alarm"
+            )
+
+    else:
+
+        approx(
+            "DC balance",
+            row.dc_offered_kw - row.dc_accepted_kw,
+            row.dc_rejected_kw,
+        )
+
+        approx(
+            "conversion balance",
+            row.dc_accepted_kw - row.ac_unclipped_kw,
+            row.conversion_loss_kw,
+        )
+
+        approx(
+            "clipping balance",
+            row.ac_unclipped_kw - row.ac_available_kw,
+            row.clipping_loss_kw,
+        )
+
+
+# ============================================================
+# DATABASE TRANSACTION REQUIREMENTS
+# ============================================================
+
+def require_transaction(
+    db: sqlite3.Connection,
+) -> None:
+
+    if not db.in_transaction:
+        raise ValueError(
+            "Caller must start a transaction"
+        )
+
+    if db.execute(
+        "PRAGMA foreign_keys"
+    ).fetchone()[0] != 1:
+        raise ValueError(
+            "Enable SQLite foreign keys "
+            "before transaction"
+        )
+
+
+# ============================================================
+# CONTENT-ADDRESSED PARAMETER SNAPSHOTS
+# ============================================================
+
+def register_parameter_snapshot(
+    db: sqlite3.Connection,
+    payload: dict,
+) -> str:
+
+    """
+    Store a parameter snapshot with SHA256 identity.
+
+    Effective values and source provenance must
+    be supplied by the caller.
+    """
+
+    require_transaction(db)
+
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "Snapshot payload must be a dict"
+        )
+
+    for key in (
+        "component_id",
+        "model_id",
+    ):
+        value = payload.get(key)
+
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+        ):
+            raise ValueError(
+                f"Snapshot requires {key}"
+            )
+
+    values = payload.get("values")
+
+    if (
+        not isinstance(values, dict)
+        or not values
+    ):
+        raise ValueError(
+            "Snapshot requires parameter values"
+        )
+
+    for name, item in values.items():
+
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(item, dict)
+            or "value" not in item
+            or any(
+                not item.get(key)
+                for key in (
+                    "source_id",
+                    "source_url",
+                    "evidence",
+                )
+            )
+        ):
+            raise ValueError(
+                "Incomplete parameter provenance"
+            )
+
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    snapshot_id = hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+
+    db.execute(
+        """
+        INSERT INTO ges_parameter_snapshots
+        (
+            snapshot_id,
+            component_id,
+            model_id,
+            payload_json
+        )
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(snapshot_id) DO NOTHING
+        """,
+        (
+            snapshot_id,
+            payload["component_id"],
+            payload["model_id"],
+            canonical,
+        ),
+    )
+
+    return snapshot_id
+
+
+# ============================================================
+# ATOMIC INVERTER INTERVAL WRITER
+# ============================================================
+
+def save_inverter_interval(
+    db: sqlite3.Connection,
+    rows: list[InverterHistoryRow],
+    plant: PlantTotals,
+    *,
+    expected_inverter_ids: tuple[str, ...],
+) -> None:
+
+    """
+    Append inverter data to an existing plant interval.
+
+    The caller owns BEGIN, COMMIT and ROLLBACK.
+
+    This function:
+    - validates records
+    - checks plant totals
+    - verifies the stored parent row
+    - writes both inverters atomically
+    - records alarm transitions
+    - checks persisted totals
+
+    No automatic commit occurs.
+    """
+
+    require_transaction(db)
+
+    check_time(
+        plant.start_utc,
+        plant.end_utc,
+    )
+
+    if (
+        type(plant.run_id) is not int
+        or plant.run_id <= 0
+    ):
+        raise ValueError(
+            "Invalid plant run ID"
+        )
+
+    # Validate expected inverter identifiers.
+
+    if (
+        not expected_inverter_ids
+        or len(set(expected_inverter_ids))
+        != len(expected_inverter_ids)
+        or any(
+            not isinstance(item, str)
+            or not item.strip()
+            for item in expected_inverter_ids
+        )
+    ):
+        raise ValueError(
+            "Expected inverter IDs invalid"
+        )
+
+    actual_ids = [
+        row.inverter_id
+        for row in rows
+    ]
+
+    if (
+        len(actual_ids) != len(set(actual_ids))
+        or set(actual_ids)
+        != set(expected_inverter_ids)
+    ):
+        raise ValueError(
+            "Missing, extra, or duplicate inverter"
+        )
+
+    # Validate each inverter and its interval.
+
+    for row in rows:
+
+        check_row(row)
+
+        if (
+            row.run_id,
+            row.start_utc,
+            row.end_utc,
+        ) != (
+            plant.run_id,
+            plant.start_utc,
+            plant.end_utc,
+        ):
+            raise ValueError(
+                "Plant/inverter run or "
+                "timestamps mismatch"
+            )
+
+    # Validate plant power totals.
+
+    for field in (
+        "available_power_kw",
+        "dispatched_power_kw",
+        "interval_energy_kwh",
+    ):
+        check_number(
+            field,
+            getattr(plant, field),
+        )
+
+    approx(
+        "plant available",
+        math.fsum(
+            row.ac_available_kw
+            for row in rows
+        ),
+        plant.available_power_kw,
+    )
+
+    approx(
+        "plant dispatched",
+        math.fsum(
+            row.ac_dispatched_kw
+            for row in rows
+        ),
+        plant.dispatched_power_kw,
+    )
+
+    approx(
+        "plant energy",
+        math.fsum(
+            row.interval_energy_kwh
+            for row in rows
+        ),
+        plant.interval_energy_kwh,
+        TOL * 0.25,
+    )
+
+    # Verify actual stored production interval.
+
+    parent = db.execute(
+        """
+        SELECT
+            available_power_kw,
+            dispatched_power_kw,
+            interval_energy_kwh
+        FROM production_intervals
+        WHERE run_id = ?
+          AND start_utc = ?
+        """,
+        (
+            plant.run_id,
+            utc_db(plant.start_utc),
+        ),
+    ).fetchone()
+
+    if parent is None:
+        raise ValueError(
+            "Plant parent interval "
+            "must be saved first"
+        )
+
+    labels = (
+        "available",
+        "dispatched",
+        "energy",
+    )
+
+    expected_values = (
+        plant.available_power_kw,
+        plant.dispatched_power_kw,
+        plant.interval_energy_kwh,
+    )
+
+    tolerances = (
+        TOL,
+        TOL,
+        TOL * 0.25,
+    )
+
+    for label, stored, expected, tol in zip(
+        labels,
+        parent,
+        expected_values,
+        tolerances,
+    ):
+
+        check_number(
+            "Parent " + label,
+            stored,
+        )
+
+        approx(
+            "Parent " + label,
+            stored,
+            expected,
+            tol,
+        )
+
+    # The inverter set must remain fixed
+    # throughout a simulation run.
+
+    old_ids = {
+        record[0]
+        for record in db.execute(
+            """
+            SELECT DISTINCT inverter_id
+            FROM ges_inverter_intervals
+            WHERE run_id = ?
+            """,
+            (plant.run_id,),
+        )
+    }
+
+    if (
+        old_ids
+        and old_ids != set(expected_inverter_ids)
+    ):
+        raise ValueError(
+            "Inverter set changed within run"
+        )
+
+    # Prevent duplicate, backward or gapped writes.
+
+    for row in rows:
+
+        prior = db.execute(
+            """
+            SELECT end_utc
+            FROM ges_inverter_intervals
+            WHERE run_id = ?
+              AND inverter_id = ?
+            ORDER BY start_utc DESC
+            LIMIT 1
+            """,
+            (
+                row.run_id,
+                row.inverter_id,
+            ),
+        ).fetchone()
+
+        if (
+            prior
+            and prior[0] != utc_db(row.start_utc)
+        ):
+            raise ValueError(
+                "Overlapping/duplicate/gapped interval"
+            )
+
+    # Savepoint: either the whole interval
+    # is stored or none of its inverter rows.
+
+    db.execute(
+        "SAVEPOINT ges_inverter_insert"
+    )
+
+    try:
+
+        for row in rows:
+
+            prior = db.execute(
+                """
+                SELECT active_alarms_json
+                FROM ges_inverter_intervals
+                WHERE run_id = ?
+                  AND inverter_id = ?
+                ORDER BY start_utc DESC
+                LIMIT 1
+                """,
+                (
+                    row.run_id,
+                    row.inverter_id,
+                ),
+            ).fetchone()
+
+            previous_alarms = (
+                set(json.loads(prior[0]))
+                if prior
+                else set()
+            )
+
+            payload = asdict(row)
+
+            for name in (
+                "start_utc",
+                "end_utc",
+                "source_timestamp_utc",
+                "received_at_utc",
+            ):
+
+                value = payload[name]
+
+                payload[name] = (
+                    utc_db(value)
+                    if value is not None
+                    else None
+                )
+
+            for name in (
+                "active_alarms",
+                "reasons",
+                "quality_flags",
+                "source_types",
+            ):
+
+                payload[name + "_json"] = json.dumps(
+                    payload.pop(name),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
+
+            columns = tuple(payload)
+
+            db.execute(
+                "INSERT INTO ges_inverter_intervals ("
+                + ", ".join(columns)
+                + ") VALUES ("
+                + ", ".join(
+                    "?"
+                    for _ in columns
+                )
+                + ")",
+                tuple(
+                    payload[name]
+                    for name in columns
+                ),
+            )
+
+            # Alarm transitions are detected at
+            # the interval boundary, not at
+            # the actual physical fault instant.
+
+            alarms = set(row.active_alarms)
+
+            transitions = (
+                (
+                    alarms - previous_alarms,
+                    "RAISED",
+                ),
+                (
+                    previous_alarms - alarms,
+                    "CLEARED",
+                ),
+            )
+
+            for codes, transition in transitions:
+
+                for code in sorted(codes):
+
+                    db.execute(
+                        """
+                        INSERT INTO
+                        ges_inverter_alarm_events
+                        (
+                            run_id,
+                            inverter_id,
+                            interval_start_utc,
+                            timestamp_utc,
+                            code,
+                            transition,
+                            time_semantics
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row.run_id,
+                            row.inverter_id,
+                            utc_db(row.start_utc),
+                            utc_db(row.start_utc),
+                            code,
+                            transition,
+                            "interval_boundary_detection",
+                        ),
+                    )
+
+        # Verify stored inverter sums again.
+
+        saved = db.execute(
+            """
+            SELECT
+                COUNT(*),
+                SUM(ac_available_kw),
+                SUM(ac_dispatched_kw),
+                SUM(interval_energy_kwh)
+            FROM ges_inverter_intervals
+            WHERE run_id = ?
+              AND start_utc = ?
+            """,
+            (
+                plant.run_id,
+                utc_db(plant.start_utc),
+            ),
+        ).fetchone()
+
+        if saved[0] != len(expected_inverter_ids):
+            raise ValueError(
+                "Persisted inverter count mismatch"
+            )
+
+        stored_labels = (
+            "DB available",
+            "DB dispatched",
+            "DB energy",
+        )
+
+        for label, actual, expected, tol in zip(
+            stored_labels,
+            saved[1:],
+            expected_values,
+            tolerances,
+        ):
+
+            approx(
+                label,
+                actual,
+                expected,
+                tol,
+            )
+
+        db.execute(
+            "RELEASE SAVEPOINT ges_inverter_insert"
+        )
+
+    except BaseException:
+
+        db.execute(
+            "ROLLBACK TO SAVEPOINT ges_inverter_insert"
+        )
+
+        db.execute(
+            "RELEASE SAVEPOINT ges_inverter_insert"
+        )
+
+        raise
+
+========== simulator/solar/multi_mppt_physics.py ==========
+
+"""
+Independent MPPT DC calculations.
+
+Uses APP's existing:
+- PV irradiance/POA model
+- Faiman temperature model
+- De Soto single-diode DC model
+
+Simulation only.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import fsum, isfinite
+from typing import Sequence
+
+from simulator.solar.pv_array import (
+    PVArrayConfiguration,
+    PVArrayDCResult,
+    calculate_pv_array_from_poa,
+)
+
+from simulator.solar.solar_resource import (
+    PVSurface,
+    SolarSite,
+    POAResult,
+    calculate_poa,
+)
+
+from simulator.solar.solar_pipeline import SolarWeather
+
+from simulator.solar.solar_temperature import (
+    FaimanParameters,
+)
+
+
+@dataclass(frozen=True)
+class MPPTLimits:
+    mppt_count: int
+    min_v: float
+    max_v: float
+    max_dc_v: float
+    max_operating_a: float
+    max_short_circuit_a: float
+    max_strings: int
+
+
+@dataclass(frozen=True)
+class MPPTArray:
+    channel: int
+    array: PVArrayConfiguration
+    surface: PVSurface
+    temperature_params: FaimanParameters = (
+        FaimanParameters()
+    )
+
+
+@dataclass(frozen=True)
+class MPPTChannelResult:
+    channel: int
+
+    voltage_v: float
+    current_a: float
+    short_circuit_a: float
+    open_circuit_v: float
+
+    offered_kw: float
+    accepted_kw: float
+    rejected_kw: float
+
+    reasons: tuple[str, ...]
+    poa: POAResult | None = None
+    dc: PVArrayDCResult | None = None
+
+
+@dataclass(frozen=True)
+class MultiMPPTResult:
+    channels: tuple[MPPTChannelResult, ...]
+
+    dc_offered_kw: float
+    dc_accepted_kw: float
+    dc_rejected_kw: float
+
+    warnings: tuple[str, ...]
+
+
+def calculate_multi_mppt_dc(
+    site: SolarSite,
+    weather: SolarWeather,
+    arrays: Sequence[MPPTArray],
+    limits: MPPTLimits,
+) -> MultiMPPTResult:
+    """
+    Calculate per-channel DC MPP and apply
+    preliminary MPPT electrical limits.
+
+    Current limiting is estimated at Vmp.
+    This is not a complete MPPT control-loop
+    or mismatch-curve model.
+    """
+
+    if (
+        not arrays
+        or type(limits.mppt_count) is not int
+        or limits.mppt_count < 1
+        or type(limits.max_strings) is not int
+        or limits.max_strings < 1
+    ):
+        raise ValueError(
+            "Invalid MPPT configuration"
+        )
+
+    electrical_limits = (
+        limits.min_v,
+        limits.max_v,
+        limits.max_dc_v,
+        limits.max_operating_a,
+        limits.max_short_circuit_a,
+    )
+
+    if (
+        any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(value)
+            or value <= 0
+            for value in electrical_limits
+        )
+        or not (
+            limits.min_v
+            < limits.max_v
+            <= limits.max_dc_v
+        )
+    ):
+        raise ValueError(
+            "Invalid MPPT electrical limits"
+        )
+
+    seen = set()
+    results = []
+
+    # Reuse POA for channels facing
+    # exactly the same surface.
+    poa_cache = {}
+
+    for item in arrays:
+
+        if (
+            type(item.channel) is not int
+            or not (
+                1 <= item.channel <= limits.mppt_count
+            )
+        ):
+            raise ValueError(
+                "Invalid MPPT channel number"
+            )
+
+        if item.channel in seen:
+            raise ValueError(
+                "Duplicate MPPT channel"
+            )
+
+        seen.add(item.channel)
+
+        if (
+            item.array.parallel_strings
+            > limits.max_strings
+        ):
+            raise ValueError(
+                "Too many parallel strings on MPPT"
+            )
+
+        # 1. Irradiance for this MPPT surface.
+        if item.surface not in poa_cache:
+            poa_cache[item.surface] = calculate_poa(
+                site=site,
+                surface=item.surface,
+                sample=weather.irradiance,
+            )
+
+        # 2. Independent PV array DC calculation.
+        dc = calculate_pv_array_from_poa(
+            poa_result=poa_cache[item.surface],
+
+            ambient_temperature_c=(
+                weather.ambient_temperature_c
+            ),
+
+            wind_speed_m_s=(
+                weather.wind_speed_m_s
+            ),
+
+            config=item.array,
+            temperature_params=item.temperature_params,
+        )
+
+        offered = dc.array_pmp_kw
+        voltage = dc.array_vmp_v
+        current = dc.array_imp_a
+
+        isc = (
+            dc.module_isc_a
+            * item.array.parallel_strings
+        )
+
+        voc = (
+            dc.module_voc_v
+            * item.array.modules_per_string
+        )
+
+        reasons = []
+
+        # 3. Apply channel-specific operating limits.
+        if offered <= 0:
+            accepted = 0.0
+
+        elif voc > limits.max_dc_v:
+            accepted = 0.0
+
+            reasons.append(
+                "DC_VOC_EXCEEDS_ABSOLUTE_LIMIT"
+            )
+
+        elif isc > limits.max_short_circuit_a:
+            accepted = 0.0
+
+            reasons.append(
+                "MPPT_SHORT_CIRCUIT_CURRENT_LIMIT"
+            )
+
+        elif not (
+            limits.min_v
+            <= voltage
+            <= limits.max_v
+        ):
+            accepted = 0.0
+
+            reasons.append(
+                "OUTSIDE_MPPT_WINDOW"
+            )
+
+        else:
+            # Approximate current limitation at Vmp.
+            maximum_power_kw = (
+                voltage
+                * limits.max_operating_a
+                / 1000.0
+            )
+
+            accepted = min(
+                offered,
+                maximum_power_kw,
+            )
+
+            if current > limits.max_operating_a:
+                reasons.append(
+                    "MPPT_OPERATING_CURRENT_LIMIT_ESTIMATE"
+                )
+
+        results.append(
+            MPPTChannelResult(
+                channel=item.channel,
+
+                voltage_v=voltage,
+                current_a=current,
+
+                short_circuit_a=isc,
+                open_circuit_v=voc,
+
+                offered_kw=offered,
+                accepted_kw=accepted,
+
+                rejected_kw=max(
+                    0.0,
+                    offered - accepted,
+                ),
+
+                reasons=tuple(reasons),
+                poa=poa_cache[item.surface],
+                dc=dc,
+            )
+        )
+
+    # 4. Combine DC power, not DC voltages.
+    total_offered = fsum(
+        item.offered_kw
+        for item in results
+    )
+
+    total_accepted = fsum(
+        item.accepted_kw
+        for item in results
+    )
+
+    return MultiMPPTResult(
+        channels=tuple(results),
+
+        dc_offered_kw=total_offered,
+        dc_accepted_kw=total_accepted,
+
+        dc_rejected_kw=max(
+            0.0,
+            total_offered - total_accepted,
+        ),
+
+        warnings=(
+            "NO_STRING_MISMATCH_IV_OPTIMIZATION",
+            "CURRENT_LIMIT_AT_VMP_IS_APPROXIMATE",
+            "COLD_VOC_REQUIRES_DESIGN_TEMPERATURE_SCREENING",
+        ),
+    )

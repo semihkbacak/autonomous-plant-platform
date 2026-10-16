@@ -1,0 +1,38 @@
+name: Cross-platform simulation regression
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - release/v1.5-preview-20261015
+permissions:
+  contents: read
+jobs:
+  regression:
+    name: ${{ matrix.os }} / Python 3.13
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify required release fixtures
+        run: python scripts/verify_release_assets.py
+      - name: Full regression tests (isolated writable temporary folder)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .ci_pytest_tmp | Out-Null
+          $target = Join-Path (Get-Location) ".ci_pytest_tmp"
+          $env:TEMP = $target
+          $env:TMP = $target
+          $env:TMPDIR = $target
+          python -m pytest -q --assert=plain --tb=short --basetemp=.ci_pytest_tmp/run
+      - name: Local read-only viewer self-test
+        run: python -m desktop.viewer_entry_v15 --self-test

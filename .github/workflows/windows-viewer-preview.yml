@@ -1,11 +1,5 @@
 name: Windows read-only viewer preview
 on:
-  push:
-    branches:
-      - 'release/**'
-    paths:
-      - 'desktop/**'
-      - '.github/workflows/windows-viewer-preview.yml'
   workflow_dispatch:
 permissions:
   contents: read

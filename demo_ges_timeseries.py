@@ -102,7 +102,7 @@ def run_demo(
         weather_file
     )
 
-    
+
     if grid_loss_interval_index is not None:
         if not (
             0 <= grid_loss_interval_index < len(weather_rows)
@@ -228,7 +228,7 @@ def run_demo(
             ))
 
     print()
-    
+
     print("SIMULATION COMPLETE")
 
 
