@@ -96,6 +96,11 @@ def create_sim_console_router(sessions: SimulatorSessions, hydro) -> APIRouter:
         require_local_write(request, x_sim_console_confirm)
         return guarded(plant, 'configure', body.mode)
 
+    @router.post('/ges/daylight')
+    def solar_daylight(request: Request, x_sim_console_confirm: str | None = Header(None)):
+        require_local_write(request, x_sim_console_confirm)
+        return guarded('ges', 'advance_to_daylight')
+
     @router.post('/hes/auto')
     def hydro_auto(active: bool, request: Request, x_sim_console_confirm: str | None = Header(None)):
         require_local_write(request, x_sim_console_confirm)

@@ -1,3 +1,6 @@
+from stage1.api import create_router as create_stage1_router, get_coordinator
+from advanced_v2.api import create_router as create_advanced_router, get_controller as get_advanced_controller
+from research_v2.api import router as research_v2_router
 from app.v14_research_api import create_v14_router
 from app.v13_engineering_lab import create_v13_lab_router
 from app.site_guard import OperationModeFence, operation_mode
@@ -5,6 +8,7 @@ from app.site_readiness import create_site_readiness_router
 from app.platform_alarm_center import create_platform_alarm_router
 from app.docs_ui import create_docs_router
 from app.sim_runtime import SimulatorSessions
+from app.live_twins_v20 import create_live_twins_router
 from app.sim_console_api import create_sim_console_router
 import asyncio
 import os
@@ -73,6 +77,10 @@ async def simulator_clock() -> None:
                 sim.tick()
             # GES/RES: accelerated 15-minute synthetic steps, opt-in only.
             await asyncio.to_thread(sim_sessions.auto_step)
+            # Explicit Stage-1 portfolio: one single 15-minute slot / 2 wall seconds.
+            await asyncio.to_thread(get_coordinator().auto_step)
+            # Distinct, opt-in advanced physics portfolio; never controls site hardware.
+            await asyncio.to_thread(get_advanced_controller().auto_step)
 
 
 @asynccontextmanager
@@ -99,6 +107,25 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+        # A graceful server shutdown must never restart a previously RUNNING
+        # synthetic three-plant clock without explicit local user consent.
+        try:
+            stage1 = get_coordinator()
+            if stage1.state == 'RUNNING':
+                await asyncio.to_thread(stage1.pause)
+        except Exception:
+            # A failed pause write is still fail-closed on next startup:
+            # RUNNING is recovered as PAUSED_RECOVERED from the journal.
+            import logging
+            logging.getLogger(__name__).exception('Stage1 safe-stop persistence failed')
+        try:
+            advanced = get_advanced_controller()
+            if advanced.state == 'RUNNING':
+                await asyncio.to_thread(advanced.pause)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('Advanced research safe-stop failed')
+
 
 # ============================================================
 # FASTAPI APPLICATION
@@ -107,9 +134,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     docs_url=None,
     title="Autonomous Plant Platform - Simulator",
-    version="0.2.0",
+    version="2.0.0-research-preview",
     description=(
-        "Simulator-only MVP for a vendor-independent "
+        "Local simulation and offline research preview for a vendor-independent "
         "industrial autonomy platform. "
         "No real PLC/SCADA/OT system is connected. "
         "All process values are synthetic."
@@ -154,6 +181,10 @@ app.include_router(
     create_hydro_live_router(sim)
 )
 app.include_router(create_sim_console_router(sim_sessions, sim))
+app.include_router(create_live_twins_router(sim_sessions, sim))
+# Isolated synchronized HES/GES/RES research clock, with its own persistence.
+app.include_router(create_stage1_router())
+app.include_router(create_advanced_router())
 app.include_router(
     create_platform_alarm_router(sim, sim_sessions)
 )
@@ -640,3 +671,6 @@ from app.engineering_audit import LocalCommandAuditMiddleware
 app.include_router(create_engineering_router(sim, sim_sessions))
 app.add_middleware(LocalCommandAuditMiddleware)
 # END AUTONOMOUS-PLANT ENGINEERING V1.1 (ADD-ONLY)
+
+# v2 research preview: strictly offline metadata/measurements, not field actuation
+app.include_router(research_v2_router)

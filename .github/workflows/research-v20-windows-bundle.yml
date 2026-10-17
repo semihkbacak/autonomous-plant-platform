@@ -1,0 +1,64 @@
+name: Windows v2.0 simulator native build (unsigned preview)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+jobs:
+  unsigned-preview:
+    runs-on: windows-2022
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install runtime and builder
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller==6.16.0
+      - name: Run full regression first
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .ci_pytest_tmp | Out-Null
+          python -m pytest -q --assert=plain --basetemp=.ci_pytest_tmp/test
+      - name: Build one-directory EXE (absolute inputs, isolated spec dir)
+        shell: pwsh
+        run: |
+          python -m desktop.full_simulator_launcher --self-test
+          $root = (Get-Location).Path
+          $static = (Resolve-Path 'app/static').Path
+          $models = (Resolve-Path 'models').Path
+          $solar = (Resolve-Path 'data/solar').Path
+          $entry = (Resolve-Path 'desktop/full_simulator_launcher.py').Path
+          $schema = (Resolve-Path 'simulator/solar/ges_history_schema.sql').Path
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name AutonomousPlantSimulatorV20_FIX11 --paths "$root" --distpath "$root/dist" --workpath "$root/.build_full_v20" --specpath "$root/.build_full_v20" --collect-all uvicorn --collect-all pvlib --collect-all sklearn --collect-all scipy --collect-all pandas --collect-all openpyxl --collect-all fastapi --collect-all starlette --collect-all pydantic --collect-submodules app --collect-submodules core --collect-submodules simulator --collect-submodules stage1 --collect-submodules advanced_v2 --collect-submodules research_v2 --collect-submodules tools --hidden-import demo_ges_integrated_v04 --hidden-import demo_ges_timeseries --add-data "$static;app/static" --add-data "$models;models" --add-data "$solar;data/solar" --add-data "$schema;simulator/solar" "$entry"
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller native Windows build failed' }
+      - name: Native Windows EXE runtime smoke test
+        shell: pwsh
+        run: |
+          $exe = '.\dist\AutonomousPlantSimulatorV20_FIX11\AutonomousPlantSimulatorV20_FIX11.exe'
+          if (!(Test-Path $exe)) { throw 'Windows EXE absent' }
+          $schema = 'dist/AutonomousPlantSimulatorV20_FIX11/_internal/simulator/solar/ges_history_schema.sql'
+          if (!(Test-Path -LiteralPath $schema -PathType Leaf)) { throw 'Bundled ges_history_schema.sql missing from Windows EXE folder' }
+          if ((Get-FileHash $schema -Algorithm SHA256).Hash -ne (Get-FileHash 'simulator/solar/ges_history_schema.sql' -Algorithm SHA256).Hash) { throw 'Bundled SQL hash mismatch' }
+          & $exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled Windows EXE failed native self-test' }
+          & $exe --smoke-server
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled Windows EXE failed Uvicorn HTTP smoke test' }
+          Get-FileHash $exe -Algorithm SHA256 | Format-List | Out-File -Encoding utf8 '.\dist\AutonomousPlantSimulatorV20_FIX11\SHA256.txt'
+      - name: Package unsigned standalone folder
+        shell: pwsh
+        run: Compress-Archive -Path 'dist/AutonomousPlantSimulatorV20_FIX11/*' -DestinationPath 'AutonomousPlantSimulatorV20_FIX11-Windows-UNSIGNED.zip'
+      - name: Attest artifact provenance (not Windows Authenticode)
+        uses: actions/attest@v4
+        with:
+          subject-path: AutonomousPlantSimulatorV20_FIX11-Windows-UNSIGNED.zip
+      - name: Upload Windows research-only artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutonomousPlantSimulatorV20_FIX11-Windows-UNSIGNED
+          path: AutonomousPlantSimulatorV20_FIX11-Windows-UNSIGNED.zip
+          retention-days: 14

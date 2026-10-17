@@ -42,6 +42,14 @@ def local_environment(settings: LaunchSettings) -> dict[str, str]:
 def main(argv: list[str] | None = None) -> int:
     settings = parse_settings(argv)
     os.environ.update(local_environment(settings))
+    # Seed read-only analytics with a labelled synthetic sample only if no
+    # historian was configured. Respect custom sources and never overwrite them.
+    if not os.environ.get("GES_HISTORIAN_DB"):
+        from tools.prepare_ges_history import ensure_synthetic_ges_history, default_history_path
+        sample_db = default_history_path()
+        ensure_synthetic_ges_history(sample_db)
+        os.environ["GES_HISTORIAN_DB"] = str(sample_db.resolve())
+        print("[APP] Synthetic GES historian:", sample_db, flush=True)
     import uvicorn
 
     print("Autonomous Plant Platform — LOCAL ONLY / NOT FIELD CONTROL")

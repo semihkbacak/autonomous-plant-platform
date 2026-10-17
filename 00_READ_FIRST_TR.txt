@@ -1,0 +1,23 @@
+P03 TAM PAKET: Eskileri karistirmadan yeni bos klasore cikartin. Ilk olarak START_HERE_WINDOWS.cmd calistirin. Ayrinti: P03_WINDOWS_ILK_KURULUM_TR.txt
+
+AUTONOMOUS PLANT PLATFORM — V2.0 RESEARCH ENGINEERING CANDIDATE
+
+BU BIR GERCEK SANTRAL OT KONTROL SISTEMI DEGILDIR.
+
+WINDOWS ACILIS HATASI:
+1) ZIP'E SAG TIK > TUMUNU AYIKLA.
+2) C:\AutonomousPlantV20 gibi yeni klasore cikart (eski v1.5 projesinin ustune yazma).
+3) CIKARILMIS proje klasorunde 00_BASLAMADAN_ONCE_WINDOWS.cmd calistir.
+4) Ilk kurulum/test tamamlaninca 05_WINDOWS_MASAUSTU_SIMULATORU.cmd calistir.
+5) Istege bagli EXE build: 06_WINDOWS_TAM_EXE_DERLE.cmd. UNSIGNED ve Windows'ta test edilmesi gerekir.
+
+ZIP icindeki CMD dosyasina cift tiklamak gecici klasorde 'windows_start.py bulunamadi'
+hatasi verir. Yeni CMD'ler bu durumu acikca bildirir.
+
+LINUX:
+bash 01_LINUX_KUR_TEST_VE_BASLAT.sh
+bash 05_LINUX_MASAUSTU_SIMULATORU.sh
+
+Test dokumu: docs/V20_DELIVERY_AND_LIMITATIONS_TR.md
+Literatur: docs/V20_LITERATURE_AND_VALIDATION_TR.md
+Telif/lisans: LICENSE_DECISION_REQUIRED.md

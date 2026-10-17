@@ -1,0 +1,11 @@
+AUTONOMOUS PLANT PLATFORM v2.0 ENGINEERING RC4
+
+1. ZIP dosyasini mutlaka TAMAMEN AYIKLA; ZIP onizlemesinden .cmd calistirma.
+2. Python 3.13 kurulu olmalidir.
+3. 01_WINDOWS_KUR_TEST_VE_BASLAT.cmd -> tam test + sunucu
+4. 05_WINDOWS_MASAUSTU_SIMULATORU.cmd -> yerel HES/GES/RES arayuzu
+5. 06_WINDOWS_TAM_EXE_DERLE.cmd -> imzasiz Windows exe denemesi
+6. docs/V20_RC4_RELEASE_AND_FIELD_EVIDENCE_TR.md -> kalan zorunlu bagimsiz onaylar
+
+Linux ve Windows tam testleri yeni aday icin ayrica dogrulanmalidir.
+Cikti yalnizca sentetik simulatordur. Gercek santral/PLC/SCADA'ya baglama.

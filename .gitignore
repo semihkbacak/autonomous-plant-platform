@@ -75,3 +75,18 @@ WINDOWS_TEST_RAPORU.txt
 
 # GitHub Actions CI temporary test files
 .ci_pytest_tmp/
+
+# Offline research local state
+/outputs/research_v2/
+
+DEPENDENCY_INVENTORY_LOCAL.json
+
+# Local release-evidence reports: may include environment/package identifiers
+/release-evidence/
+
+# FIX5 generated EXE output and logs
+.build_full_v20/
+WINDOWS_EXE_DERLEME_RAPORU.txt
+# Legacy Windows repair archives may be present in already extracted installs.
+_WINDOWS_AUDIT_ONAR_YEDEK/
+*_ONAR_YEDEK/
