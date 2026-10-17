@@ -1,0 +1,16 @@
+AUTONOMOUS PLANT PLATFORM v1.5.0-rc.1 — GITHUB YAYINI
+
+Bu paket dogrudan Windows bilgisayarinizdan GitHub deposuna gonderilmek icin hazirlandi.
+
+1. Git for Windows ve GitHub CLI (gh) kurulu olmali. GitHub CLI kurulumu:
+   winget install GitHub.cli
+2. Komut satirinda bir kez kimlik dogrulayin:
+   gh auth login
+3. ZIP'i tamamen bos bir klasore acin ve RC1_TEK_TIK_YAYIN_WINDOWS.cmd dosyasini calistirin.
+4. Ekranda YUKLE yazip Enter'a basin. Kod yalnizca release/v1.5-rc1 dalina aktarilir.
+5. Script surumu GitHub Releases uzerinde pre-release olarak acmayi dener.
+
+GitHub main dalina push / force-push YAPILMAZ. Kod otomatik birlesTIRILMEZ.
+API ve uygulama sadece sentetik simülasyondur. Gercek saha/PLC/SCADA veya OEM dogrulamasi degildir.
+LICENSE karari ve ges_oem_research.zip icindeki materyallerin dagitim haklari ayrica incelenmelidir.
+Tam Windows/Linux CI sonucu adayin kabulunu belirleyecektir.

@@ -1,0 +1,11 @@
+P02 — Windows cp1254 / UTF-8 düzeltmesi
+
+P01 Windows tam test: 781 PASS + 2 FAIL (UnicodeDecodeError cp1254) + 1 WARNING.
+P02 mevcut projede yalnızca kodlama ve test taşınabilirliği düzeltmesidir.
+
+1. 14_WINDOWS_P02_KODLAMA_TEST.cmd
+2. 10_WINDOWS_ASAMA2_5_TEST.cmd
+3. 09_WINDOWS_ASAMA1_KAYNAK_DOGRULA.cmd
+
+Detay: docs/WINDOWS_UTF8_P02_QA_TR.md
+Windows P02 testleri ve EXE burada çalıştırılmadı. GitHub main korunuyor.

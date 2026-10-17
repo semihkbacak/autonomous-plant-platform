@@ -1,0 +1,35 @@
+﻿AUTONOMOUS PLANT PLATFORM - AŞAMA 1–5 | WINDOWS KURULUMU
+=========================================================
+Bu arşiv, önceki sürümden farklı olarak proje dosyalarını
+ZIP'in KÖK DİZİNİNE koyar. Ara klasör aramayacaksınız.
+
+DİKKAT: Yalnızca sentetik simülasyon, gerçek santral kontrolü yok.
+
+1. ZIP'e sağ tıklayın -> Tümünü ayıkla. Örnek hedef:
+   C:\AutonomousPlant\Asama1_5\
+   ZIP ÖNİZLEMESİNDEN dosya çalıştırmayın.
+
+2. Çıkarılan klasörde "00_WINDOWS_BASLAT.cmd" dosyasına çift tıklayın.
+   Menü 1: Python 3.13 kurulumu/bağımlılıklar ve tam test
+   Menü 2: Aşama 1–5 tam regresyon (10_...cmd)
+   Menü 3: Masaüstü uygulaması (11_...cmd)
+   Menü 4: Gelişmiş araştırma sayfası (sunucu çalışırken)
+
+Doğrudan dosyalar da aynı klasörün kökünde:
+- 01_WINDOWS_KUR_TEST_VE_BASLAT.cmd  (kur/test + sunucu açabilir)
+- 02_YALNIZ_TEST.cmd                (kurulum + test, sunucu açmaz)
+- 10_WINDOWS_ASAMA2_5_TEST.cmd      (tam test, ortam kurulu olmalı)
+- 11_WINDOWS_ASAMA2_5_AC.cmd        (masaüstü uygulaması)
+
+Masaüstünde: Start local simulator -> Advanced physics + decisions
+Ayrıca: http://127.0.0.1:8000/platform/advanced-twins
+
+Masaüstü menüsünde yeni düğme görünmüyorsa eski FIX11 EXE'sini
+veya eski masaüstü kısayolunu açıyor olabilirsiniz. Bu arşivden
+11_WINDOWS_ASAMA2_5_AC.cmd dosyasını açın.
+
+Bu pakette eski kaynak dosyaları değişmedi: yalnız ZIP klasör
+düzeni sadeleştirildi, bir menü eklendi. Tam Windows GUI / EXE
+kabul testi bu repaketleme ile ayrıca yapılmış değildir.
+
+README ve ASAMA_1_5_KULLANIM_VE_KAPSAM_TR.md detayları içerir.

@@ -28,7 +28,7 @@ def main():
     p.add_argument('--report',type=Path,required=True)
     a=p.parse_args(); result=inspect(a.exe)
     a.report.parent.mkdir(parents=True,exist_ok=True)
-    a.report.write_text(json.dumps(result,indent=2)+'\n')
+    a.report.write_text(json.dumps(result,indent=2)+'\n', encoding='utf-8')
     print(json.dumps(result,indent=2));return 0 if result['built'] else 2
 
 if __name__=='__main__':raise SystemExit(main())

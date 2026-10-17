@@ -1,11 +1,69 @@
+# Autonomous Plant Platform — v1.5.0 stable candidate (source review)
+
+> **Stable candidate, pending final review; not production-grade plant control.** HES/GES/RES only in local synthetic SIMULATION mode. No actual PLC/SCADA, OEM certification, site acceptance, grid-connected control, or production-readiness claim.
+
+**Windows:** Install Python 3.13, extract the complete source tree, run `START_HERE_WINDOWS.cmd`. Subsequent startup: `P04_HIZLI_BASLAT_WINDOWS.cmd`. The shared UTC/dispatch UI is at `http://127.0.0.1:8000/platform/synchronized`. The service build marker remains `UTC_DISPATCH_P04` because this candidate is a versioned packaging of the P04 implementation, not a physics rewrite.
+
+**GitHub:** Use `RC1_GITHUB_ONIZLE.cmd` to preview changes and `RC1_GITHUBA_GONDER.cmd` to push **only** `release/v1.5-rc1`. A `git` CLI and GitHub authentication are required. The script will never push or rewrite `main`. See [RC1_GITHUB_YAYIN_REHBERI_TR.md](RC1_GITHUB_YAYIN_REHBERI_TR.md).
+
+**Quality evidence:** Last user-reported Windows run on earlier P01: 781 passed, 2 failed due to default cp1254 text encoding. That defect was fixed in P02/P03. P04 Linux selected regression: 522 passed, 7 skipped, 8 deselected, and additional pvlib-dependent modules were unavailable in the container. Browser JS/API/SQLite interaction was verified via a FastAPI bridge; **complete native Windows RC1 acceptance is still pending.** Check CI on the RC branch and the Windows GUI before considering publication.
+
+**Licensing:** Original project code and project-authored materials owned by the copyright holder are offered under Apache-2.0 (see `LICENSE` and `NOTICE`). Third-party dependencies retain their respective licenses. The optional private research archive `ges_oem_research.zip` is excluded from public source and is never required for standard installation; see `docs/THIRD_PARTY_MATERIALS_TR.md`. Earlier tagged releases and Git history may still contain copies and require separate review.
+
+## P04 implementation notes (retained)
+
+# P04 — Quick start / HES + GES + RES sentetik UTC paneli
+
+**Windows ilk çalıştırma:** Yeni ve boş bir klasöre P04 TAM kaynak ZIP’ini tamamen çıkarın. Daha önceki P01, P02, P03 klasörlerine yama kopyalamayın. Eski 127.0.0.1:8000 sunucularını normal biçimde kapatın. `START_HERE_WINDOWS.cmd` dosyasını çalıştırın. İlk kurulum bağımlılıkları hazırlar, tam pytest regresyonunu çalıştırır ve masaüstü arayüzünü başlatır. Masaüstündeki **HES/GES/RES · UTC synchronized** düğmesiyle üretim panelini açın.
+
+**Sonraki açılışlar:** `P04_HIZLI_BASLAT_WINDOWS.cmd` (kurulu venv ile hızlı başlatma). **Sadece kabul testleri:** `P04_KABUL_TEST_WINDOWS.cmd`. Sunucu sürümü doğrulaması: `http://127.0.0.1:8000/api/v2/clock/build` yanıtındaki `build` alanı `UTC_DISPATCH_P04` olmalı.
+
+**Panel:** İlk açılışta `NOT_CREATED` bir bozukluk değildir; oturum henüz oluşturulmamıştır. P04 panelinde `Otomatik başlat`, `+15 dk` veya üretim planı/setpoint işlemleri ilk kullanıcı tıklamasında gerekirse oturumu oluşturur. `Yeni oturum / sıfırla` mevcut aktif simülasyonu değiştirir ancak eski oturum geçmişini silmez. Sentetik mod dışında POST komutları reddedilir. HES/GES/RES fiziksel üst sınırlarını aşan güç üretilmiş gibi gösterilmez. Bu katman sahada PLC/SCADA kontrolü veya OEM doğrulaması DEĞİLDİR.
+
+**Önemli doğrulama sınırı:** P04 burada Linux üzerinde API/SQLite testleri ve Chromium UI JavaScript + FastAPI test istemcisiyle doğrulandı. Gerçek Windows GUI ve tam Windows bağımlılıkları bu ortamda çalıştırılmadı; Windows kabulü ayrıca gereklidir.
+
+---
+
+# Autonomous Plant Platform — P03 Windows/Linux tam kaynak
+
+**Windows için tek giriş dosyası: `START_HERE_WINDOWS.cmd`.** Tam P03 ZIP içeriğini eski P01/P02 dosyalarıyla karıştırmadan **yeni boş bir klasöre** çıkarın. Windows Python 3.13 gerekir. Başlatıcı, kaynak bütünlüğünü kontrol eder, gerekli `.venv` ortamını kurar/denetler, tam pytest regresyonunu çalıştırır ve yalnızca başarı halinde sentetik masaüstü simülatörünü başlatır. Yalnız test için `10_WINDOWS_ASAMA2_5_TEST.cmd`. Rehber: `P03_WINDOWS_ILK_KURULUM_TR.txt`; değişiklikler: `P03_WINDOWS_DUZELTME_OZETI.md`. Windows P03 kabulü henüz kullanıcı tarafından doğrulanmamıştır; GUI/EXE sertifikasyonu yoktur.
+
+---
+
+## Önceki sürüm notları (tarihsel)
+
+> **P02 (17 Oct 2026):** Windows cp1254/UTF-8 test portability hotfix; on Windows use `14_WINDOWS_P02_KODLAMA_TEST.cmd`, then `10_WINDOWS_ASAMA2_5_TEST.cmd`. See `docs/WINDOWS_UTF8_P02_QA_TR.md`. Windows P02 acceptance pending.
+
+# Autonomous Plant Platform — Aşama 1–5 Birleşik Sentetik Araştırma Sürümü
+
+> **Mevcut Aşama 1/FIX11.1 korunmuştur.** Aşama 2–5 için ayrı, sürümlenmiş `advanced_v2` fizik/karar destek modülleri ve yerel panel eklendi. **Yalnızca SENTETİK SİMÜLASYON.** OEM kalibrasyonu, gerçek tesis bağlantısı veya güvenlik sertifikası değildir.
+
+**Kullanım:** `ASAMA_1_5_KULLANIM_VE_KAPSAM_TR.md` · Windows: `10_WINDOWS_ASAMA2_5_TEST.cmd` ve `11_WINDOWS_ASAMA2_5_AC.cmd` · Linux: `10_LINUX_ASAMA2_5_TEST.sh` ve `11_LINUX_ASAMA2_5_BASLAT.sh`.
+
+**Yeni panel:** `http://127.0.0.1:8000/platform/advanced-twins` — GES I–V/MPPT, RES pitch/yaw/rotor, HES governor/rezervuar, ortak karar destek, çok günlük SQLite ve UTC kaydı. Eski `/platform/synchronized` paneli ayrıca korunmuştur.
+
+---
+
+**FIX8 Windows desktop preflight patch:** [README_WINDOWS_FIX8_TR.md](README_WINDOWS_FIX8_TR.md).
+
+**FIX7 Windows SQLite / EXE build fixes:** [README_WINDOWS_FIX7_TR.md](README_WINDOWS_FIX7_TR.md).
+
+**FIX6 — Windows EXE / GES–RES canlı sentetik ikiz düzeltmesi:** [README_WINDOWS_FIX6_TR.md](README_WINDOWS_FIX6_TR.md). Önceki EXE ve ZIP içinden çalıştırılan kaynaklarla karıştırmayın.
+
+> **Important:** v2.0 RC4 research candidate. Signed Windows EXE, OEM/site measurements, licensed publishing and independent safety acceptance are NOT completed. Read `00_WINDOWS_RC4_OKU.txt` and `docs/V20_RC4_RELEASE_AND_FIELD_EVIDENCE_TR.md`. NEVER run CMD from inside ZIP preview.
+
 # Autonomous Plant Platform
 
-**HES + GES + RES | Simulation-first energy plant digital twins and decision-support research platform**
+> **Stage 1 addition — synchronized HES/GES/RES UTC portfolio**: `ASAMA1_KULLANIM_VE_DOGRULAMA_TR.md` · dashboard `/platform/synchronized` · 15-minute native-model steps, multi-day SQLite journal and crash-safe restore. Synthetic simulation only.
+ — v2.0 Engineering RC4 (synthetic research)
 
-> **Release status:** v1.5 preview — research / synthetic simulation / offline SHADOW analysis.
+**HES + GES + RES | Windows/Linux local synthetic simulation, offline research, source-code preview**
+
+> **Release status:** v2.0 RC4 synthetic research preview — not production software.
 > **NOT FOR REAL-TIME OT CONTROL.** No production PLC/SCADA command channel, field acceptance, OEM certification, or unattended plant-control approval is included.
 
-[![Cross-platform regression](https://github.com/semihkbacak/autonomous-plant-platform/actions/workflows/portability-ci.yml/badge.svg)](https://github.com/semihkbacak/autonomous-plant-platform/actions/workflows/portability-ci.yml)
+**RC4 local engineering checks:** 689 passed, 2 scikit-learn cross-version warnings (Linux CPython 3.13.5). New HES/GES/RES paused synthetic checkpoints, deterministic model configuration locking, SQLite backup/restore, native-Windows EXE smoke-test workflow and SBOM/pip-audit workflow. **New Windows/GitHub checks have not yet been run.** See `docs/V20_RC4_RELEASE_AND_FIELD_EVIDENCE_TR.md`.
+
 [![Windows viewer preview](https://github.com/semihkbacak/autonomous-plant-platform/actions/workflows/windows-viewer-preview.yml/badge.svg)](https://github.com/semihkbacak/autonomous-plant-platform/actions/workflows/windows-viewer-preview.yml)
 
 ## Overview / Genel bakış
@@ -27,7 +85,7 @@ These are software capabilities, **not** claims of OEM-level digital-twin fideli
 
 ## Installation — Windows / Linux (local simulation)
 
-**Python 3.13 recommended.** Local regression snapshots: Windows 662 passed (2026-10-16, Python 3.13.15) and Linux 662 passed (2026-10-15, Python 3.13). Follow GitHub Actions for cross-platform validation of each commit. Other versions may require additional testing. No real PLC, SCADA or OT network integration is authorized.
+**Python 3.13 recommended**, test suite snapshots: Linux 662 passed, user-reported Windows FIX2 all panels opened; Windows final regression count should be confirmed by local report. Other versions may require additional testing. No real PLC, SCADA or OT network integration is authorized.
 
 ### Windows (PowerShell/CMD, Python 3.13 installed)
 
@@ -131,3 +189,45 @@ Please submit changes through a review branch/PR. Label synthetic examples clear
 ## License / Lisans
 
 **License has not yet been declared in this repository.** All code and third-party data must be reviewed for ownership and compatible redistribution rights before commercial or public packaged distribution. GitHub public visibility by itself does not grant third-party reuse permission.
+
+## Experimental v2.0 research preview
+
+This workspace contains optional local research APIs under `/api/v2/research`, a basic desktop launcher and CSV/SQLite offline analysis. This is an **experimental work-in-progress**, not the completed production milestones. See `docs/V20_DELIVERY_AND_LIMITATIONS_TR.md`.
+
+## RC4 FIX5 — GES historian / Windows EXE build
+
+On first launch, the GES historian-backed MPPT dashboard requires historical SQLite
+rows. FIX5 creates an explicitly **synthetic four-interval** demo historian only
+when no `GES_HISTORIAN_DB` environment variable is set and no default demo file
+exists. Other existing databases are never overwritten. For manual installation
+on Windows run `07_GES_ORNEK_GECMIS_OLUSTUR.cmd`, then restart the server.
+
+To build the unsigned Windows simulator folder run `06_WINDOWS_TAM_EXE_DERLE.cmd`.
+The log is saved as `WINDOWS_EXE_DERLEME_RAPORU.txt`. Output is
+`dist/AutonomousPlantSimulatorV20/AutonomousPlantSimulatorV20.exe`, which **must
+stay with its `_internal` folder**. The script pauses after completion and
+attempts to create a Desktop shortcut after successful native `--self-test`.
+See `README_WINDOWS_GES_FIX5_TR.md` for Turkish instructions and limitations.
+
+FIX5 was regression-tested on Linux / CPython 3.13: **693 passed, 2 warnings**
+(the local scikit-learn 1.8.0 did not match the bundled model's 1.9.1).
+Native Windows EXE build, GUI interactions, signing and hardware/site validation
+are not certified by these tests. This is local synthetic research software only.
+
+## FIX11: Windows packaged SQL resource repair
+
+FIX10 could build but the packaged executable omitted `simulator/solar/ges_history_schema.sql`.
+FIX11 includes and SHA-256-verifies this resource before marking the native Windows EXE build successful.
+See [`README_WINDOWS_FIX11_TR.md`](README_WINDOWS_FIX11_TR.md) for a no-rebuild FIX10 hotfix and clean FIX11 build instructions.
+This is a **synthetic simulator**; a Windows GUI acceptance check is still required.
+
+## UTC production scheduling / sentetik üretim planı — development P01
+
+The current development package adds a **synthetic-only, bounded export-dispatch envelope** over the Stage 1 synchronized portfolio. Open `/platform/synchronized` for 15-minute/hourly/daily UTC production targets, per-plant kW/MW manual setpoints, synthetic STOP/START/AUTO, scenario availability limits, SQLite audit history and Normal/Fast/Max simulation pacing.
+
+**Do not confuse this with actual PLC/SCADA setpoint control or closed-loop hydro dispatch.** The underlying native hydro mechanical state is not recomputed to match curtailed exported power. OEM validation and field acceptance remain outstanding.
+
+- Architecture, models, formulae, limitations: `docs/UTC_DISPATCH_ENGINEERING_REVIEW_TR.md`
+- Linux regression and required Windows acceptance: `WINDOWS_KABUL_VE_TEST_RAPORU_2026-10-17.md`
+- Existing legacy repair backup folders are ignored by `pytest.ini`; new backups can be made with `12_WINDOWS_GUVENLI_ONAR_YEDEGI.cmd` outside project root.
+- Development branch and main-safe GitHub publishing instructions: `GIT_BRANCH_PREP_TR.md`

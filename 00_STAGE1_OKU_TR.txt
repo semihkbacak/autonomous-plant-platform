@@ -1,0 +1,23 @@
+AUTONOMOUS PLANT PLATFORM v2.0 — AŞAMA 1 / ORTAK UTC DİJİTAL İKİZ
+===============================================================
+SADECE SENTETİK SİMÜLASYON; PLC/SCADA VE GERÇEK SAHA BAĞLANTISI YOK.
+
+WINDOWS:
+1) ZIP dosyasını sağ tık -> Tümünü ayıkla. ZIP içinden çalıştırma.
+2) Kurulu Python 3.13 ile ilk kez: 01_WINDOWS_KUR_TEST_VE_BASLAT.cmd
+3) Daha sonra: 08_WINDOWS_ASAMA1_TEST_VE_BASLAT.cmd
+4) Uygulamada Start local simulator, ardından
+   HES/GES/RES · UTC synchronized düğmesini aç.
+5) Doğrudan sayfa: http://127.0.0.1:8000/platform/synchronized
+6) Projeyi doğrula: 09_WINDOWS_ASAMA1_KAYNAK_DOGRULA.cmd
+7) EXE'yi yalnız Windows üzerinde derle: 06_WINDOWS_TAM_EXE_DERLE.cmd
+   Çıktı eski Windows reçetesiyle uyumlu FIX11 adlıdır.
+
+VERİ KORUMA:
+Varsayılan Windows SQLite: %LOCALAPPDATA%\AutonomousPlantPlatform\stage1\synchronized.sqlite3
+Oturumu yeniden açınca son tutarlı UTC slotu yüklenir.
+Beklenmedik kapanışta otomatik simülasyon tekrar başlamaz (PAUSED_RECOVERED).
+Örnek iki gün CSV: examples/stage1_two_day_SYNTHETIC_UTC.csv
+
+Ayrıntı: ASAMA1_KULLANIM_VE_DOGRULAMA_TR.md
+Gerçek Windows EXE/GUI kabulü bu ortamda doğrulanmadı.

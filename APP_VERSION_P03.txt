@@ -1,0 +1,3 @@
+UTC_DISPATCH_P03_COMPLETE_WINDOWS_UTF8_AND_LAUNCHER_FIX
+Synthetic simulation only; no PLC/SCADA field control.
+Unverified on native Windows by packager; run full Windows QA before acceptance.

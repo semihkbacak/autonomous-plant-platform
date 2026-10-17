@@ -1,0 +1,18 @@
+{
+  "scope": "SIMULATION_ONLY",
+  "fixture": "HES_NATIVE_GES_RES_TOY",
+  "steps": 8,
+  "elapsed_wall_s": 0.30001,
+  "elapsed_process_cpu_s": 0.29004,
+  "engine_compute_and_checkpoint_s": 0.27813,
+  "sqlite_transaction_s": 0.01854,
+  "other_and_dispatch_read_s": 0.00334,
+  "step_mean_wall_s": 0.0375,
+  "automatic_wait_s": 0,
+  "automatic_modes": {
+    "NORMAL": "one step every two 1-second loop ticks",
+    "FAST": "one step per loop tick",
+    "MAX": "up to four steps per loop tick"
+  },
+  "note": "No auto-mode sleep included in this microbenchmark; real PV/wind timing requires pvlib environment."
+}

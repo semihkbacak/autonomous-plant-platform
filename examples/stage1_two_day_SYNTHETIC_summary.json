@@ -1,0 +1,16 @@
+{
+  "scope": "SYNTHETIC_THREE_PLANT_NO_OT",
+  "measurement": "NONE",
+  "intervals": 192,
+  "rows": 576,
+  "start_utc": "2026-01-01T00:00:00Z",
+  "end_utc": "2026-01-03T00:00:00+00:00",
+  "finished": true,
+  "totals_kwh": {
+    "HES": 1151990.3665957977,
+    "GES": 164.62738475485008,
+    "RES": 157242.9928366668
+  },
+  "csv_sha256": "f5a752eb2bf74055e613859a8033476a49a4c7fd5fd58d24982945a47877fa2a",
+  "notice": "Synthetic repeated weather demo; not OEM/site validated."
+}

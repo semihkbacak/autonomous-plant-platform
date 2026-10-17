@@ -1,0 +1,11 @@
+{
+  "description": "192 x 15min three-plant purely synthetic research outputs",
+  "steps": 192,
+  "site_validated": false,
+  "totals_kwh": {
+    "HES": 92745.10542,
+    "GES": 3171.6942,
+    "RES": 19382.54524
+  },
+  "last_utc_end": "2026-01-03T00:00:00+00:00"
+}

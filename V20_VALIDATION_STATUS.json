@@ -1,0 +1,45 @@
+{
+  "version": "2.0.0-engineering-rc4",
+  "date": "2026-10-16",
+  "production_ready": false,
+  "real_plant_control_authorized": false,
+  "scope": "local synthetic simulation / offline research",
+  "linux_python": "3.13.5",
+  "linux_pytest": {
+    "passed": 689,
+    "failed": 0,
+    "warnings": 2,
+    "seconds": 31.0
+  },
+  "windows_v20_regression_completed": false,
+  "windows_v20_gui_tested": false,
+  "windows_exe_built": false,
+  "windows_exe_signed": false,
+  "github_release_created": false,
+  "supply_chain_security_scan_online": false,
+  "third_party_oem_licensing_approved": false,
+  "real_site_oem_calibration": false,
+  "hil_fat_sat_done": false,
+  "notes": [
+    "689 local tests passed on Linux/Python 3.13.5. Two scikit-learn InconsistentVersionWarning because the local environment has scikit-learn 1.8.0 and model was saved in 1.9.1.",
+    "GitHub Actions workflows and native Windows EXE build/smoke steps supplied but not executed for RC4; no Windows certification claimed.",
+    "OEM calibration, third-party redistribution rights, operator safety procedures, site permits and independent HIL/FAT/SAT remain unverified; physical OT commands absent."
+  ],
+  "session_resume": {
+    "research_model_parameters_locked": true,
+    "sqlite_backup_restore_tested_linux": true,
+    "hydro_mutable_checkpoint_linux": true,
+    "ges_res_deterministic_replay_linux": true,
+    "paused_portfolio_checkpoint_linux": true,
+    "hot_recovery_production_site": false
+  },
+  "software_distribution": {
+    "native_windows_exe_build_workflow_authored": true,
+    "exe_runtime_smoke_in_workflow_authored": true,
+    "code_signing_script_requires_user_certificate": true,
+    "authenticode_signature_verified": false,
+    "pip_audit_workflow_authored": true,
+    "pip_audit_online_executed": false,
+    "sbom_generation_tested_linux": true
+  }
+}

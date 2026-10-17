@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - release/v1.5-preview-20261015
+      - release/v1.5-rc1
 permissions:
   contents: read
 jobs:
