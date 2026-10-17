@@ -1,0 +1,40 @@
+name: v2.0 supply-chain vulnerability report (network required)
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - requirements.txt
+      - requirements-windows.txt
+      - scripts/sbom_v20.py
+      - .github/workflows/research-v20-security.yml
+permissions:
+  contents: read
+jobs:
+  vulnerability-audit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install pinned direct requirements and auditing tools
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pip-audit
+      - name: Produce installed package inventory and CycloneDX SBOM
+        run: |
+          python scripts/sbom_v20.py --output release-evidence/installed-packages.cdx.json
+          python -m pip freeze > release-evidence/installed-pip-freeze.txt
+      - name: Live vulnerability audit (findings fail the job)
+        run: python -m pip_audit -r requirements.txt --format json --output release-evidence/pip-audit.json
+      - name: Preserve SBOM and security findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-${{ matrix.os }}
+          path: release-evidence/
+          retention-days: 30

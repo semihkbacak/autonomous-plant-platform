@@ -1,0 +1,3 @@
+UTC_DISPATCH_P04_FRESH_SESSION_UI_AND_PORT_GUARD
+Synthetic research simulation only; no OT/PLC/SCADA.
+Windows full regression and native GUI acceptance required; local browser+API test is not a Windows GUI acceptance.

@@ -1,0 +1,18 @@
+AUTONOMOUS PLANT PLATFORM - P03 TAM PAKET - WINDOWS KURULUMU
+
+1) Eski P01/P02 klasorlerini kullanmayin. Onceki calismalari saklayabilirsiniz.
+2) Bu P03 ZIP dosyasina sag tik -> Tumunu ayikla / Extract All.
+   Ornek: C:\\AutonomousPlant_P03  (YENI BOS KLASOR).
+3) ZIP icindeki TUM klasorleri ayni kok dizinde birakin:
+   app, stage1, advanced_v2, desktop, windows, tests, tools, simulator.
+4) Yalnizca START_HERE_WINDOWS.cmd dosyasini cift tiklayin.
+   Bu dosya: sanal ortami hazirlar, tum testleri calistirir, gecerse masaustu
+   simulatorunu acar. Python 3.13 ve internet gerekebilir.
+5) Sadece TEST icin: 10_WINDOWS_ASAMA2_5_TEST.cmd
+   UTF-8 hedefli test icin: 14_WINDOWS_P02_KODLAMA_TEST.cmd
+6) P01 klasorundeki eski CMD calistirilmamali. Bu paket P03 marker tasir.
+7) Test sonucu 'X passed, 1 warning' (digerleri 0 failed) olmadan
+   GitHub'a aktarim YAPMAYIN.
+
+Bu sentetik arastirma yazilimidir. PLC/SCADA saha kontrolu YOKTUR.
+Windows EXE / GUI kabul testi bu ortamda yapilamamistir.

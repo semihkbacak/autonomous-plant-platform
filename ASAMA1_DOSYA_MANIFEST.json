@@ -1,0 +1,102 @@
+{
+  "files": {
+    "00_WINDOWS_BASLAT.cmd": {
+      "bytes": 1530,
+      "sha256": "0148862069713e4c185e6cb808ebb6f8ccfce52aa8c4328778d4c2cc9c083445"
+    },
+    "10_WINDOWS_ASAMA2_5_TEST.cmd": {
+      "bytes": 1173,
+      "sha256": "4a5f05f14c818131b18ebacbb6e0b69dc0320c5d7fc182660857e07158ef9081"
+    },
+    "13_WINDOWS_DISPATCH_KABUL.cmd": {
+      "bytes": 968,
+      "sha256": "a79b77bbb9d95dd7d8e0d91cac153f2d08ef3cb7c3fa266135aa006cc75ab191"
+    },
+    "14_WINDOWS_P02_KODLAMA_TEST.cmd": {
+      "bytes": 996,
+      "sha256": "a1206ef703b84d67f4cf04d49467b71faa7aaa6c08c888fe9e59d9d1d80fb6a8"
+    },
+    "P02_WINDOWS_KODLAMA_ONARIMI_OKU_TR.txt": {
+      "bytes": 432,
+      "sha256": "da7642e6cb112046724f2b4b0a322a3ee40dfc9629ea14dad7c32fc428439592"
+    },
+    "desktop/windows_release_preflight.py": {
+      "bytes": 1647,
+      "sha256": "764d0e1b43225c0ae69eb962b08769efad7b6268b94835e49935ffc9b0021f61"
+    },
+    "docs/UTC_DISPATCH_ENGINEERING_REVIEW_TR.md": {
+      "bytes": 18118,
+      "sha256": "850d16115e893bc17287ad9bc236b6e0049b40ec94b69edb91d9ae6f05f15da9"
+    },
+    "docs/WINDOWS_UTF8_P02_QA_TR.md": {
+      "bytes": 4319,
+      "sha256": "76c393b83982f6f1566532d275401d97c25b968ac9e10001ed771a54bc10a7c2"
+    },
+    "pytest.ini": {
+      "bytes": 284,
+      "sha256": "5c6c9e69bb5a44f922403aae24a45b2388d632ab666dcc79065f1bf6fbc43902"
+    },
+    "stage1/__init__.py": {
+      "bytes": 130,
+      "sha256": "c794f86ac336af30ed5a6e3bba9a7bff7da168983ef608a545a75281718fe8e9"
+    },
+    "stage1/api.py": {
+      "bytes": 18166,
+      "sha256": "11006b5e884d1b44e3470914d129248c5c5e4d12365f8324df9d69c3ade6c34d"
+    },
+    "stage1/controller.py": {
+      "bytes": 10240,
+      "sha256": "eb399dacb7938b9a33fc5ee647b82e92139b07fdeea3b60d32129ee32965f652"
+    },
+    "stage1/dispatch.py": {
+      "bytes": 8436,
+      "sha256": "82ef62224d2d1c4d8ab3ce7b09591ad9e2a9b04acb3c68b6d7c12a3a74f6add5"
+    },
+    "stage1/engine.py": {
+      "bytes": 10289,
+      "sha256": "32fb976aed25b1cc6dedba6e77f0031f775685d018460e7fe3cae49c647062a9"
+    },
+    "stage1/store.py": {
+      "bytes": 19092,
+      "sha256": "b9f8a7d971dfa55a19e78f1ead651f250be90db04904be7ee17cfb56c0e94777"
+    },
+    "tests/test_ges_v10_release.py": {
+      "bytes": 5424,
+      "sha256": "461e8bb6f1fda2104278d56d5e6c75537a14f0163bc6cd29155283b68ceba096"
+    },
+    "tests/test_rc4_release_gates.py": {
+      "bytes": 7411,
+      "sha256": "68fbeb462309549d17fede8816f71a338ae0f9e9351d48c6b27b84ce892c2309"
+    },
+    "tests/test_stage1_dispatch_schedule_p01.py": {
+      "bytes": 14073,
+      "sha256": "8a6a73253c2fad0517d7b7751d1ce2a67b394d8efc51cb36d8beb2964a1b72b3"
+    },
+    "tests/test_stage1_three_plant_sync.py": {
+      "bytes": 10205,
+      "sha256": "0d2de106163bab71fe6b31f753f39f29b29a4e438c8ea5bdb5945f844cb319e3"
+    },
+    "tests/test_stages_2_to_5_advanced.py": {
+      "bytes": 12008,
+      "sha256": "9dec6b01111cb62ff21edf991a1c3c59992d6973b3bfcd5d03f3da30ee976b5e"
+    },
+    "tests/test_windows_utf8_portability_p02.py": {
+      "bytes": 2245,
+      "sha256": "deb6e970497d0459508ab9a55e00ca64ccd9cbf39111151b9e54c92455e7d673"
+    },
+    "tools/audit_repair_backup.py": {
+      "bytes": 1872,
+      "sha256": "8a512e8ed32904dd090af0615a9b73a34ea9f50d7fe13776149d7f913284e788"
+    },
+    "tools/profile_stage1.py": {
+      "bytes": 3049,
+      "sha256": "8f80f908a193fdf6202eda900c22d7f2cbaf01a7f1e010e35b34820772ab1927"
+    },
+    "windows/windows_start.py": {
+      "bytes": 11638,
+      "sha256": "1792f3f52ddfc731d0ead1d7fbc042d2803fa4757bca720c7f34d38c94add69f"
+    }
+  },
+  "release": "UTC_DISPATCH_P02_WINDOWS_UTF8_FIX_PENDING_WINDOWS_QA",
+  "scope": "STAGE1_SYNTHETIC_HES_GES_RES_NO_OT"
+}

@@ -7,6 +7,8 @@ History databases are not opened for writing. Each session is capped at 96
 from __future__ import annotations
 
 from collections import deque
+from hashlib import sha256
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from math import cos, pi, sin, isfinite
@@ -35,8 +37,11 @@ class _Session:
         self.energy_kwh = 0.0
         self.last_end_utc: str | None = None
         self.last_units: list[dict] = []
+        self.last_conditions: dict = {}
+        self.power_series: deque[dict] = deque(maxlen=96)
         self.events: deque[dict] = deque(maxlen=50)
         self.error: str | None = None
+        self._replay_trace: list[dict] = []
         self._engine: Any = None
         self._inputs: list[Any] | None = None
 
@@ -53,13 +58,15 @@ class _Session:
                 'scope': 'SYNTHETIC_IN_MEMORY_NO_OT',
                 'running': self.running,
                 'mode': self.mode,
-                'available_modes': MODES[self.plant],
+                'available_modes': list(MODES[self.plant]),
                 'intervals': self.index,
                 'max_intervals': 96,
                 'last_power_kw': self.last_power_kw,
                 'energy_kwh': self.energy_kwh,
                 'last_end_utc': self.last_end_utc,
                 'units': list(self.last_units),
+                'conditions': dict(self.last_conditions),
+                'power_series': list(self.power_series),
                 'events': list(self.events),
                 'error': self.error,
                 'historian_written': False,
@@ -96,9 +103,12 @@ class _Session:
             self.energy_kwh = 0.0
             self.last_end_utc = None
             self.last_units = []
+            self.last_conditions = {}
+            self.power_series.clear()
             self._engine = None
             self._inputs = None
             self.error = None
+            self._replay_trace.clear()
             self.events.clear()
             self._event('RESET')
             return self.status()
@@ -127,6 +137,11 @@ class _Session:
                 self.energy_kwh += energy
                 self.last_end_utc = report['end_utc']
                 self.last_units = report['units']
+                self.last_conditions = dict(report.get('conditions', {}))
+                self.power_series.append({'end_utc': report['end_utc'], 'power_kw': kw})
+                report_digest = sha256(json.dumps(report, sort_keys=True, default=str,
+                                  separators=(',',':'), allow_nan=False).encode('utf-8')).hexdigest()
+                self._replay_trace.append({'mode': self.mode, 'sha256': report_digest})
                 self.index += 1
                 if self.index == 96:
                     self.running = False
@@ -137,6 +152,63 @@ class _Session:
                 self.error = type(exc).__name__
                 self._event('MODEL_ERROR')
                 raise
+
+    def export_replay(self) -> bytes:
+        """Exact synthetic history for deterministic rehydration, not physical state."""
+        with self._lock:
+            if self.error is not None:
+                raise SessionError('Error-latched live session requires reset; cannot guarantee replay')
+            payload = {'schema': 1, 'scope': 'SYNTHETIC_REPLAY_NO_FIELD_IO',
+                       'plant': self.plant, 'mode': self.mode, 'running': self.running,
+                       'trace': list(self._replay_trace), 'status': self.status()}
+            raw=json.dumps(payload,sort_keys=True,default=str,separators=(',',':'),allow_nan=False).encode('utf-8')
+            if len(raw)>200_000:raise ValueError('Replay is too large')
+            return json.dumps({'payload':payload,'sha256':sha256(raw).hexdigest()},
+                              sort_keys=True,default=str,separators=(',',':')).encode('utf-8')
+
+    @classmethod
+    def import_replay(cls, raw: bytes):
+        """Replay every prior mode + physical simulation step; reject any drift."""
+        if not isinstance(raw, bytes) or len(raw)>220_000 or not raw:
+            raise ValueError('Invalid live replay size')
+        try:
+            doc=json.loads(raw)
+            p=doc['payload']
+            encoded=json.dumps(p,sort_keys=True,default=str,separators=(',',':'),allow_nan=False).encode('utf-8')
+            if sha256(encoded).hexdigest()!=doc['sha256']:
+                raise ValueError('Replay digest invalid')
+            if p['schema']!=1 or p['scope']!='SYNTHETIC_REPLAY_NO_FIELD_IO':
+                raise ValueError('Unknown live runtime replay version')
+            target=cls()
+            if target.plant!=p['plant'] or p['mode'] not in MODES[target.plant]:
+                raise ValueError('Incorrect simulator type or mode')
+            trace=p['trace']
+            if not isinstance(trace,list) or len(trace)>96:
+                raise ValueError('Invalid replay history')
+            for item in trace:
+                if item['mode'] not in MODES[target.plant]:
+                    raise ValueError('Unsupported replay mode')
+                target.mode=item['mode']
+                target.step()
+                if target._replay_trace[-1]!=item:
+                    raise ValueError('Model changed; exact replay cannot be guaranteed')
+            target.mode=p['mode']
+            state=p['status']
+            if state['intervals']!=target.index or state['last_power_kw']!=target.last_power_kw \
+                or state['energy_kwh']!=target.energy_kwh or state['units']!=target.last_units \
+                or state['last_end_utc']!=target.last_end_utc or state['error'] is not None:
+                raise ValueError('Synthetic replay result mismatch')
+            if type(p['running'])!=bool or p['running']!=state['running']:
+                raise ValueError('Invalid replay running flag')
+            target.running=p['running']
+            if not isinstance(state['events'],list) or len(state['events'])>50:
+                raise ValueError('Invalid event history')
+            target.events=deque(state['events'],maxlen=50)
+            if target.status()!=state:
+                raise ValueError('Synthetic replay did not reproduce the recorded state')
+            return target
+        except (KeyError,IndexError,TypeError,ValueError,SessionError) as exc:
+            raise ValueError('Corrupt/incompatible synthetic runtime checkpoint') from exc
 
     def auto_step(self) -> None:
         with self._lock:
@@ -163,6 +235,15 @@ class SolarSession(_Session):
         engine = SolarTimeSeriesSimulator(pipeline)
         self._engine = engine
         self._inputs = inputs
+
+    def advance_to_daylight(self) -> dict:
+        """Fast-forward SYNTHETIC weather only, never a real-world clock."""
+        with self._lock:
+            for _ in range(48):
+                if self.index >= 96 or self.last_conditions.get('irradiance_ghi_w_m2', 0) >= 40:
+                    break
+                self.step()
+            return self.status()
 
     def _compute(self, index: int) -> dict:
         item = self._inputs[index]
@@ -193,6 +274,13 @@ class SolarSession(_Session):
                 {'id': x.inverter_id, 'kw': x.ac_dispatched_kw, 'status': x.status}
                 for x in result.inverter_results
             ],
+            'conditions': {
+                'irradiance_ghi_w_m2': weather.irradiance.ghi_w_m2,
+                'ambient_temperature_c': weather.ambient_temperature_c,
+                'wind_speed_m_s': weather.wind_speed_m_s,
+                'grid_available': item.grid_available,
+                'source': 'SYNTHETIC_PV_INVERTER_MPPT',
+            },
         }
 
 
@@ -233,6 +321,12 @@ class WindSession(_Session):
                 {'id': x.turbine_id, 'kw': x.dispatched_kw, 'status': x.status}
                 for x in result.turbines
             ],
+            'conditions': {
+                'wind_speed_m_s': wind,
+                'wind_direction_deg': weather.from_direction_deg,
+                'grid_available': control.grid_available,
+                'source': 'SYNTHETIC_WIND_FARM',
+            },
         }
 
 
@@ -246,6 +340,63 @@ class SimulatorSessions:
         if plant not in ('ges', 'res'):
             raise SessionError('Unknown simulator')
         return getattr(self, plant)
+
+    def export_replay(self) -> bytes:
+        """Exact synthetic history for deterministic rehydration, not physical state."""
+        with self._lock:
+            if self.error is not None:
+                raise SessionError('Error-latched live session requires reset; cannot guarantee replay')
+            payload = {'schema': 1, 'scope': 'SYNTHETIC_REPLAY_NO_FIELD_IO',
+                       'plant': self.plant, 'mode': self.mode, 'running': self.running,
+                       'trace': list(self._replay_trace), 'status': self.status()}
+            raw=json.dumps(payload,sort_keys=True,default=str,separators=(',',':'),allow_nan=False).encode('utf-8')
+            if len(raw)>200_000:raise ValueError('Replay is too large')
+            return json.dumps({'payload':payload,'sha256':sha256(raw).hexdigest()},
+                              sort_keys=True,default=str,separators=(',',':')).encode('utf-8')
+
+    @classmethod
+    def import_replay(cls, raw: bytes):
+        """Replay every prior mode + physical simulation step; reject any drift."""
+        if not isinstance(raw, bytes) or len(raw)>220_000 or not raw:
+            raise ValueError('Invalid live replay size')
+        try:
+            doc=json.loads(raw)
+            p=doc['payload']
+            encoded=json.dumps(p,sort_keys=True,default=str,separators=(',',':'),allow_nan=False).encode('utf-8')
+            if sha256(encoded).hexdigest()!=doc['sha256']:
+                raise ValueError('Replay digest invalid')
+            if p['schema']!=1 or p['scope']!='SYNTHETIC_REPLAY_NO_FIELD_IO':
+                raise ValueError('Unknown live runtime replay version')
+            target=cls()
+            if target.plant!=p['plant'] or p['mode'] not in MODES[target.plant]:
+                raise ValueError('Incorrect simulator type or mode')
+            trace=p['trace']
+            if not isinstance(trace,list) or len(trace)>96:
+                raise ValueError('Invalid replay history')
+            for item in trace:
+                if item['mode'] not in MODES[target.plant]:
+                    raise ValueError('Unsupported replay mode')
+                target.mode=item['mode']
+                target.step()
+                if target._replay_trace[-1]!=item:
+                    raise ValueError('Model changed; exact replay cannot be guaranteed')
+            target.mode=p['mode']
+            state=p['status']
+            if state['intervals']!=target.index or state['last_power_kw']!=target.last_power_kw \
+                or state['energy_kwh']!=target.energy_kwh or state['units']!=target.last_units \
+                or state['last_end_utc']!=target.last_end_utc or state['error'] is not None:
+                raise ValueError('Synthetic replay result mismatch')
+            if type(p['running'])!=bool or p['running']!=state['running']:
+                raise ValueError('Invalid replay running flag')
+            target.running=p['running']
+            if not isinstance(state['events'],list) or len(state['events'])>50:
+                raise ValueError('Invalid event history')
+            target.events=deque(state['events'],maxlen=50)
+            if target.status()!=state:
+                raise ValueError('Synthetic replay did not reproduce the recorded state')
+            return target
+        except (KeyError,IndexError,TypeError,ValueError,SessionError) as exc:
+            raise ValueError('Corrupt/incompatible synthetic runtime checkpoint') from exc
 
     def auto_step(self) -> None:
         self._clock_counter += 1

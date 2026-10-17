@@ -212,7 +212,7 @@ def test_benchmark_rejects_nonfinite_and_naive_timestamps(
     path.write_text(
         "timestamp_utc,predicted_kw,measured_kw\n"
         "2026-06-21T00:00:00,1,1\n"
-        "2026-06-21T00:15:00,NaN,1\n"
+        "2026-06-21T00:15:00,NaN,1\n", encoding="utf-8"
     )
 
     with pytest.raises(
