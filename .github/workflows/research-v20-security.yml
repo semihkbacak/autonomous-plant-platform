@@ -17,8 +17,8 @@ jobs:
         os: [ubuntu-24.04, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - name: Install pinned direct requirements and auditing tools
@@ -33,7 +33,7 @@ jobs:
         run: python -m pip_audit -r requirements.txt --format json --output release-evidence/pip-audit.json
       - name: Preserve SBOM and security findings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: supply-chain-${{ matrix.os }}
           path: release-evidence/
