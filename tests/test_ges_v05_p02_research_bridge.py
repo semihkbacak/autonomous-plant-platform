@@ -15,6 +15,8 @@ RESEARCH_ZIP = Path(__file__).resolve().parents[1] / "ges_oem_research.zip"
 
 @pytest.fixture(scope="module")
 def catalog():
+    if not RESEARCH_ZIP.is_file():
+        pytest.skip('Optional private research archive not shipped in public source distribution')
     return load_researched_oem_catalog(RESEARCH_ZIP)
 
 

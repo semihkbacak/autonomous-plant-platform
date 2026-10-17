@@ -22,7 +22,6 @@ REQUIRED_FILES = (
     'data/solar/demo_weather_15m.csv',
     'data/solar/reference/ges_component_parameters.csv',
     'data/solar/reference/ges_benchmark_results.csv',
-    'ges_oem_research.zip',
     'outputs/ges_oem_shadow_v05/oem_shadow_audit.json',
 )
 
@@ -106,7 +105,7 @@ def verify_files():
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if digest != expected[name]:
             raise RuntimeError('SHA256 mismatch (do not run modified research data): ' + name)
-    print('[APP] Original SSD test fixtures: 5/5 SHA256 OK', flush=True)
+    print('[APP] Required public demo fixtures: ' + str(len(REQUIRED_FILES)) + '/' + str(len(REQUIRED_FILES)) + ' SHA256 OK', flush=True)
 
 def correct_interpreter() -> bool:
     if not PYTHON.is_file(): return False

@@ -53,9 +53,9 @@ WINDOWS_TEST_RAPORU.txt
 *.db-wal
 *.db-shm
 
-# Deny all archives except the reviewed reproducibility input below.
+# Third-party research archives are local inputs, not distributable source.
 *.zip
-!ges_oem_research.zip
+
 
 # Deny local /data files but version the synthetic fixtures required by tests.
 /data/*

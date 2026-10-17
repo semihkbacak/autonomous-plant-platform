@@ -1,6 +1,6 @@
-# Autonomous Plant Platform — v1.5.0-rc.1 (Release Candidate)
+# Autonomous Plant Platform — v1.5.0 stable candidate (source review)
 
-> **Source release candidate, not a stable/production release.** HES/GES/RES only in local synthetic SIMULATION mode. No actual PLC/SCADA, OEM certification, site acceptance, grid-connected control, or production-readiness claim.
+> **Stable candidate, pending final review; not production-grade plant control.** HES/GES/RES only in local synthetic SIMULATION mode. No actual PLC/SCADA, OEM certification, site acceptance, grid-connected control, or production-readiness claim.
 
 **Windows:** Install Python 3.13, extract the complete source tree, run `START_HERE_WINDOWS.cmd`. Subsequent startup: `P04_HIZLI_BASLAT_WINDOWS.cmd`. The shared UTC/dispatch UI is at `http://127.0.0.1:8000/platform/synchronized`. The service build marker remains `UTC_DISPATCH_P04` because this candidate is a versioned packaging of the P04 implementation, not a physics rewrite.
 
@@ -8,7 +8,7 @@
 
 **Quality evidence:** Last user-reported Windows run on earlier P01: 781 passed, 2 failed due to default cp1254 text encoding. That defect was fixed in P02/P03. P04 Linux selected regression: 522 passed, 7 skipped, 8 deselected, and additional pvlib-dependent modules were unavailable in the container. Browser JS/API/SQLite interaction was verified via a FastAPI bridge; **complete native Windows RC1 acceptance is still pending.** Check CI on the RC branch and the Windows GUI before considering publication.
 
-**Licensing:** No approved `LICENSE` exists; `ges_oem_research.zip` contains research documents requiring separate distribution-rights review. Until resolved, do not label this as an approved open-source public release. Review `LICENSE_DECISION_REQUIRED.md`.
+**Licensing:** Original project code and project-authored materials owned by the copyright holder are offered under Apache-2.0 (see `LICENSE` and `NOTICE`). Third-party dependencies retain their respective licenses. The optional private research archive `ges_oem_research.zip` is excluded from public source and is never required for standard installation; see `docs/THIRD_PARTY_MATERIALS_TR.md`. Earlier tagged releases and Git history may still contain copies and require separate review.
 
 ## P04 implementation notes (retained)
 

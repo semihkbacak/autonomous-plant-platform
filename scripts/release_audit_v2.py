@@ -8,5 +8,5 @@ def main():
   p=ROOT/name
   if not p.is_file():raise SystemExit('MISSING '+name)
   if hashlib.sha256(p.read_bytes()).hexdigest()!=expected:raise SystemExit('HASH MISMATCH '+name)
- print('FIVE LEGACY FIXTURES VERIFIED; licensing and OEM provenance not certified')
+ print(str(len(manifest['required_fixtures_sha256']))+' PUBLIC FIXTURES VERIFIED; external OEM provenance not certified')
 if __name__=='__main__':main()
